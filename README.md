@@ -247,7 +247,7 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 337, including 8 browser end-to-end tests |
+| Tests | 345, including 8 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
 | CLI commands | 11 |
