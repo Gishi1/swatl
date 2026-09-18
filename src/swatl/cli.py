@@ -28,7 +28,6 @@ for _noisy in (
     "httpcore",
     "urllib3",
     "openai",
-    "sentence_transformers",
     "huggingface_hub",
     "filelock",
     "faiss",
@@ -266,7 +265,7 @@ def translate(
     embedding_backend: str | None = typer.Option(
         None,
         "--embedding-backend",
-        help="Embedding backend: ollama, local (sentence-transformers) or openai.",
+        help="Embedding backend: ollama (default) or openai.",
     ),
     embedding_model: str | None = typer.Option(
         None, "--embedding-model", help="Embedding model name (default: bge-m3 for Ollama)."

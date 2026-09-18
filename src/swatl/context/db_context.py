@@ -52,7 +52,7 @@ def resolve_embedding_config(
     """Decide which embedding backend to use.
 
     Priority: explicit arguments → config file → environment → auto-detection
-    (a reachable local Ollama server first, then sentence-transformers).
+    (a reachable local Ollama server).
     """
     if backend:
         cfg = EmbedderConfig(
@@ -74,8 +74,6 @@ def resolve_embedding_config(
             base_url=base_url or config_file.base_url,
             api_key=config_file.api_key or os.environ.get("SWATL_EMBEDDING_API_KEY", ""),
             dimension=config_file.dimension,
-            reduce_dimensions=config_file.reduce_dimensions,
-            reduce_to=config_file.reduce_to,
         )
         return EmbeddingResolution(cfg, "from the [embedding] config section")
 
@@ -91,7 +89,7 @@ def resolve_embedding_config(
         )
         return EmbeddingResolution(cfg, "from SWATL_EMBEDDING_* environment variables")
 
-    # Auto-detect: prefer a local Ollama server, fall back to sentence-transformers.
+    # Auto-detect a local Ollama server; anything else must be configured.
     ollama_url = base_url or os.environ.get("OLLAMA_HOST") or OLLAMA_DEFAULT_URL
     if ollama_is_available(ollama_url):
         picked, note = _pick_ollama_model(ollama_url)
@@ -104,25 +102,15 @@ def resolve_embedding_config(
             f"(try: ollama pull bge-m3)",
         )
 
-    try:
-        import sentence_transformers  # noqa: F401
-
-        cfg = EmbedderConfig(backend="local", model="nomic-embed-text-v2-moe")
-        return EmbeddingResolution(cfg, "auto-detected sentence-transformers")
-    except ImportError:
-        return EmbeddingResolution(
-            None,
-            "no embedding backend available: start Ollama (ollama pull bge-m3) or install "
-            "sentence-transformers",
-        )
+    return EmbeddingResolution(
+        None,
+        "no embedding backend available: start Ollama (ollama pull bge-m3), or configure "
+        "an OpenAI-compatible endpoint with --embedding-backend openai --embedding-url",
+    )
 
 
 def _default_model(backend: str) -> str:
-    if backend == "ollama":
-        return "bge-m3"
-    if backend == "openai":
-        return "text-embedding-3-small"
-    return "nomic-embed-text-v2-moe"
+    return "bge-m3" if backend == "ollama" else "text-embedding-3-small"
 
 
 def _pick_ollama_model(base_url: str) -> tuple[str | None, str]:

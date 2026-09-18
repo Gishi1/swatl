@@ -255,7 +255,7 @@ class ContextEntry:
 src/swatl/
 ├── context/                     # Phase 6 embedding module (from ADR-0007)
 │   ├── __init__.py
-│   ├── embedder.py              # Wraps sentence-transformers / OpenAI
+│   ├── embedder.py              # Wraps Ollama / OpenAI-compatible embeddings
 │   ├── index.py                 # FAISS index management
 │   ├── retriever.py             # retrieve + deduplicate + format
 │   └── store.py                 # Persistence for index + metadata

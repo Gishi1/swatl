@@ -29,11 +29,14 @@ class TestEmbedderConfig:
         cfg = EmbedderConfig(backend="ollama", model="some-custom-embed")
         assert cfg.dimension == 0  # decided by the first response
 
-    def test_local_backend_reduces_dimensions(self):
-        cfg = EmbedderConfig(
-            backend="local", model="nomic-embed-text-v2-moe", reduce_dimensions=True
-        )
-        assert cfg.dimension == cfg.reduce_to
+    def test_unknown_backend_is_rejected(self):
+        with pytest.raises(ValueError, match="Unknown embedding backend"):
+            EmbedderConfig(backend="sentence-transformers")
+
+    def test_local_backend_is_gone(self):
+        """The in-process backend was removed with its torch dependency."""
+        with pytest.raises(ValueError):
+            EmbedderConfig(backend="local")
 
     def test_openai_backend(self):
         cfg = EmbedderConfig(backend="openai", model="text-embedding-3-small")
@@ -389,10 +392,13 @@ class TestEmbedder:
         embedder = Embedder(EmbedderConfig(backend="openai", dimension=256))
         assert embedder.dimension == 256
 
-    def test_is_available_local(self):
-        embedder = Embedder(EmbedderConfig(backend="local"))
-        # sentence_transformers should be installed
+    def test_is_available_openai_with_key(self):
+        embedder = Embedder(EmbedderConfig(backend="openai", api_key="k"))
         assert embedder.is_available is True
+
+    def test_describe_ollama(self):
+        embedder = Embedder(EmbedderConfig(backend="ollama", model="bge-m3"))
+        assert embedder.describe() == "ollama:bge-m3 at http://127.0.0.1:11434"
 
     def test_is_available_openai_no_key(self):
         embedder = Embedder(EmbedderConfig(backend="openai", api_key=""))

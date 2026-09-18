@@ -55,7 +55,7 @@ src/swatl/
 
 └── context/                 # PHASE 6 — embedding-based context retrieval
     ├── __init__.py
-    ├── embedder.py          # sentence-transformers wrapper + OpenAI fallback
+    ├── embedder.py          # Ollama (native /api/embed) + OpenAI-compatible client
     ├── index.py             # FAISS index management (add/query/save/load)
     ├── retriever.py         # retrieve (single + batched) + format for prompt
     ├── db_context.py        # build a retriever from a context database,

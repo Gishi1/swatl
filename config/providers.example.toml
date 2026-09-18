@@ -56,8 +56,11 @@ api_key_env = "DASHSCOPE_API_KEY"
 # Ollama is the default and needs no API key:
 #   ollama pull bge-m3          # 1024-dim, strong on Chinese and English
 #
-# When this section is absent, swatl auto-detects: a reachable Ollama server
-# first, then sentence-transformers if it is installed.
+# When this section is absent, swatl auto-detects a reachable Ollama server.
+# Any OpenAI-compatible embeddings endpoint works too:
+#   backend = "openai"
+#   base_url = "http://localhost:1234/v1"
+#   api_key_env = "EMBEDDING_API_KEY"
 [embedding]
 backend = "ollama"
 model = "bge-m3"

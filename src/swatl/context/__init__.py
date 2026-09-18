@@ -1,7 +1,7 @@
 """Context Database — embedding-based semantic retrieval for translation consistency.
 
 This module provides:
-- Embedding of text segments into vector space (Ollama, sentence-transformers or cloud)
+- Embedding of text segments into vector space (Ollama or any OpenAI-compatible API)
 - FAISS-based vector index for nearest-neighbor search
 - High-level retrieval that deduplicates and formats results for prompt injection
 - A bridge from curated context databases to a retriever (``build_db_retriever``)

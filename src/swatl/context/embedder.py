@@ -1,4 +1,4 @@
-"""Embedding wrapper: Ollama (local server), sentence-transformers, or OpenAI."""
+"""Embedding wrapper: Ollama (local server) or any OpenAI-compatible endpoint."""
 
 from __future__ import annotations
 
@@ -7,13 +7,10 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# Supported model IDs for local embedding.
-LOCAL_MODELS: dict[str, str] = {
-    "nomic-embed-text-v2-moe": "nomic-ai/nomic-embed-text-v2-moe",
-    "nomic-embed-text": "nomic-ai/nomic-embed-text-v1",
-    "all-MiniLM-L6-v2": "sentence-transformers/all-MiniLM-L6-v2",
-    "BGE-M3": "BAAI/bge-m3",
-}
+# Embedding backends this package can talk to. Any OpenAI-compatible
+# ``/v1/embeddings`` server can be used through "openai", including a local
+# Ollama server, LM Studio or a translation proxy.
+BACKENDS = ("ollama", "openai")
 
 # Default embedding dimensions per model family.
 DIMENSIONS: dict[str, int] = {
@@ -47,9 +44,9 @@ OLLAMA_MODEL_PREFERENCE = ("bge-m3", "qwen3-embedding", "nomic-embed-text", "mxb
 class EmbedderConfig:
     """Configuration for the embedding backend."""
 
-    # "ollama", "local" (sentence-transformers) or "openai"
+    # "ollama" or "openai" (see BACKENDS)
     backend: str = "ollama"
-    # Model identifier — an Ollama model name, a LOCAL_MODELS key, or an OpenAI model ID
+    # Model identifier — an Ollama model name or an OpenAI-compatible model ID
     model: str = "bge-m3"
     # Embedding dimension (output dimension after any reduction).
     # 0 means "unknown, adopt the dimension of the first response".
@@ -58,13 +55,14 @@ class EmbedderConfig:
     api_key: str = ""
     # Base URL: Ollama server or OpenAI-compatible endpoint
     base_url: str = ""
-    # Reduce dimensionality for local models (only nomic supports this via MRL)
-    reduce_dimensions: bool = False
-    reduce_to: int = 256
     # Timeout in seconds for embedding requests
     timeout: float = 120.0
 
     def __post_init__(self) -> None:
+        if self.backend not in BACKENDS:
+            raise ValueError(
+                f"Unknown embedding backend {self.backend!r}: choose one of {', '.join(BACKENDS)}"
+            )
         if self.backend == "ollama" and not self.base_url:
             self.base_url = OLLAMA_DEFAULT_URL
         if self.dimension == 0:
@@ -81,20 +79,19 @@ class EmbedderConfig:
             return 0  # adopt whatever the server returns
         model_lower = self.model.lower()
         if model_lower.startswith("nomic"):
-            return self.reduce_to if self.reduce_dimensions else DIMENSIONS["nomic"]
-        if model_lower.startswith("all-minilm") or model_lower.startswith("all-MiniLM"):
+            return DIMENSIONS["nomic"]
+        if model_lower.startswith("all-minilm"):
             return DIMENSIONS["minilm"]
         if model_lower.startswith("bge"):
             return DIMENSIONS["bge"]
-        return 768
+        return 0  # adopt whatever the server returns
 
 
 class Embedder:
-    """Wraps sentence-transformers for local embedding or OpenAI API for cloud."""
+    """Embeds text through a local Ollama server or an OpenAI-compatible API."""
 
     def __init__(self, config: EmbedderConfig | None = None) -> None:
         self.config = config or EmbedderConfig()
-        self._pipeline = None  # Lazy-loaded sentence-transformers pipeline
         self._client = None  # Lazy-loaded OpenAI client
 
     # ── Public API ──────────────────────────────────────────────────────
@@ -105,9 +102,7 @@ class Embedder:
             return []
         if self.config.backend == "ollama":
             return self._embed_ollama(texts)
-        if self.config.backend == "openai":
-            return self._embed_openai(texts)
-        return self._embed_local(texts)
+        return self._embed_openai(texts)
 
     def embed_one(self, text: str) -> list[float]:
         """Embed a single text and return the vector."""
@@ -155,44 +150,6 @@ class Embedder:
         self._adopt_dimension(vectors)
         return vectors
 
-    # ── Local (sentence-transformers) ───────────────────────────────────
-
-    def _embed_local(self, texts: list[str]) -> list[list[float]]:
-        import torch
-        from sentence_transformers import SentenceTransformer
-
-        if self._pipeline is None:
-            model_name = LOCAL_MODELS.get(
-                self.config.model,
-                f"huggingface/{self.config.model}",
-            )
-            logger.info("Loading embedding model: %s", model_name)
-            self._pipeline = SentenceTransformer(
-                model_name,
-                trust_remote_code=True,
-            )
-            # Set reduce_to dimension if supported (nomic)
-            if self.config.reduce_dimensions and hasattr(self._pipeline, "set_norm"):
-                try:
-                    self._pipeline.set_norm(self.config.reduce_to)
-                except Exception:
-                    pass
-
-        with torch.no_grad():
-            embeddings = self._pipeline.encode(
-                texts,
-                show_progress_bar=False,
-                normalize_embeddings=True,  # cosine similarity via inner product
-            )
-
-        # Cast to list[list[float]]
-        result = embeddings.tolist()
-        # Trim to configured dimension
-        dim = self.config.dimension
-        if dim and dim < len(result[0]):
-            result = [vec[:dim] for vec in result]
-        return result
-
     # ── Cloud (OpenAI) ──────────────────────────────────────────────────
 
     def _embed_openai(self, texts: list[str]) -> list[list[float]]:
@@ -221,22 +178,13 @@ class Embedder:
     def is_available(self) -> bool:
         if self.config.backend == "ollama":
             return ollama_is_available(self.config.base_url or OLLAMA_DEFAULT_URL)
-        if self.config.backend == "openai":
-            return bool(self.config.api_key)
-        try:
-            import sentence_transformers  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
+        return bool(self.config.api_key)
 
     def describe(self) -> str:
         """A short human-readable description of the backend in use."""
         if self.config.backend == "ollama":
             return f"ollama:{self.config.model} at {self.config.base_url or OLLAMA_DEFAULT_URL}"
-        if self.config.backend == "openai":
-            return f"openai:{self.config.model}"
-        return f"sentence-transformers:{self.config.model}"
+        return f"openai:{self.config.model}"
 
 
 # ── Ollama discovery helpers ────────────────────────────────────────────

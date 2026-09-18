@@ -59,6 +59,10 @@ cd swatl
 uv sync
 ```
 
+Embeddings are served by Ollama or any OpenAI-compatible endpoint, so no ML
+runtime is installed in-process: a full install is roughly 370 MB.
+
+
 To try the pipeline without any API key or network access, use the bundled
 offline provider:
 
@@ -194,7 +198,7 @@ src/swatl/
 ├── review/       interactive review session
 ├── audit/        quality heuristics
 ├── quality/      back-translation sampling
-├── context/      embedding index and retrieval (FAISS + sentence-transformers)
+├── context/      embedding index and retrieval (FAISS + Ollama/OpenAI embedders)
 ├── context_db/   curated context entries (CRUD and import)
 ├── state/        append-only JSONL checkpoints with last-write-wins semantics
 ├── writeback/    in-place text replacement and EPUB re-zip
@@ -264,7 +268,7 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 401, including 9 browser end-to-end tests |
+| Tests | 403, including 9 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
 | CLI commands | 12 |
@@ -321,12 +325,11 @@ translation continues without context rather than failing.
 
 | Backend | Notes |
 |---|---|
-| `ollama` (default) | No API key and no model download beyond `ollama pull bge-m3`. `bge-m3` is 1024-dim and handles Chinese well. |
-| `local` | sentence-transformers, runs in-process; downloads a model on first use. |
-| `openai` | Any OpenAI-compatible `/v1/embeddings` endpoint; needs `api_key`/`api_key_env`. |
+| `ollama` (default) | No API key and no download beyond `ollama pull bge-m3`. `bge-m3` is 1024-dim and handles Chinese well. |
+| `openai` | Any OpenAI-compatible `/v1/embeddings` endpoint, including a local server such as LM Studio; needs `api_key`/`api_key_env`. |
 
-Configure it in the providers file, or let swatl auto-detect (a reachable
-Ollama server first, then sentence-transformers):
+Configure it in the providers file, or let swatl auto-detect a reachable
+Ollama server:
 
 ```toml
 [embedding]
@@ -343,7 +346,7 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
 - The quality audit is heuristic: it flags likely problems, it does not prove correctness.
 - Back-translation similarity is lexical overlap, not a learned metric.
 - EPUB2 NCX (`toc.ncx`) navigation labels are not translated; EPUB3 navigation documents are.
-- Context-aware retrieval needs an embedding backend; the Ollama default requires `ollama pull bge-m3` (about 1.2 GB).
+- Context-aware retrieval needs an embedding backend; the Ollama default requires `ollama pull bge-m3` (about 1.2 GB). Without one, translation still runs, minus the injected context.
 - The web GUI targets a single local user: it binds to `127.0.0.1` and has no authentication.
 
 ### What gets translated

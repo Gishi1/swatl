@@ -218,7 +218,7 @@ Week 5: Phase 4 (optional) / Phase 5
 
 | # | Task | Status |
 |---|---|---|
-| 6.1 | `context/embedder.py` — sentence-transformers wrapper + OpenAI fallback | **Done** |
+| 6.1 | `context/embedder.py` — Ollama + OpenAI-compatible embedders | **Done** |
 | 6.2 | `context/index.py` — FAISS index management (add/query/save/load) | **Done** |
 | 6.3 | `context/retriever.py` — retrieve + deduplicate + format for prompt | **Done** |
 | 6.4 | Integrate retriever into `prompt_builder.py` and `translator.py` | **Done** |

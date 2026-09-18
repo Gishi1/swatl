@@ -2,8 +2,18 @@
 
 | Field        | Value                              |
 |--------------|------------------------------------|
-| Status       | Proposed                           |
+| Status       | Accepted, superseded in part       |
 | Date         | 2026-01-17                         |
+
+> **Update (2026-09-18):** the decision below chose in-process
+> `sentence-transformers` embeddings. In practice that pulled torch and a
+> multi-gigabyte dependency tree into a tool whose embeddings are a small
+> optional feature. The retrieval design (FAISS index, normalized vectors,
+> cosine search, prompt injection) is unchanged, but the embedder now talks to
+> an **Ollama** server by default, or to any OpenAI-compatible
+> `/v1/embeddings` endpoint. `sentence-transformers` was removed from the
+> dependency list. See `swatl/context/embedder.py` and
+> `swatl/context/db_context.py`.
 
 ## Context
 

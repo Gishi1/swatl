@@ -124,13 +124,10 @@ class TestResolveEmbeddingConfig:
         from swatl.context import db_context
 
         monkeypatch.setattr(db_context, "ollama_is_available", lambda url, timeout=1.5: False)
-        monkeypatch.setattr(
-            db_context, "resolve_embedding_config", db_context.resolve_embedding_config
-        )
-        monkeypatch.setitem(__import__("sys").modules, "sentence_transformers", None)
         resolution = resolve_embedding_config()
         assert resolution.config is None
         assert "no embedding backend" in resolution.reason
+        assert "--embedding-url" in resolution.reason
 
 
 class TestPickOllamaModel:
