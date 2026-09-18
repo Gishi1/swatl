@@ -73,14 +73,92 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+_SEGMENT_WRAPPER_RE = re.compile(
+    r"""^\s*<segment\b[^>]*>\s*(?P<body>.*?)\s*</segment>\s*$""", re.DOTALL | re.IGNORECASE
+)
+_SEGMENT_OPEN_RE = re.compile(r"^\s*<segment\b[^>]*>\s*", re.IGNORECASE)
+_SEGMENT_CLOSE_RE = re.compile(r"\s*</segment>\s*$", re.IGNORECASE)
+_FENCE_RE_FULL = re.compile(r"^\s*```[a-zA-Z]*\s*(?P<body>.*?)\s*```\s*$", re.DOTALL)
+
+
+def _clean_translation(text: str) -> str:
+    """Strip prompt scaffolding a model may have echoed into its answer.
+
+    Real gateways occasionally return ``<segment id="p-0002">…</segment>`` or a
+    fenced code block instead of the bare translation, especially when the
+    prompt delimits segments with XML tags.
+    """
+    cleaned = text.strip()
+
+    wrapper = _SEGMENT_WRAPPER_RE.match(cleaned)
+    if wrapper:
+        cleaned = wrapper.group("body").strip()
+    else:
+        cleaned = _SEGMENT_OPEN_RE.sub("", cleaned)
+        cleaned = _SEGMENT_CLOSE_RE.sub("", cleaned)
+
+    fence = _FENCE_RE_FULL.match(cleaned)
+    if fence:
+        cleaned = fence.group("body").strip()
+
+    return cleaned.strip()
+
+
+def _collect_sse_content(body: str) -> str:
+    """Assemble assistant text from an OpenAI-style SSE stream body.
+
+    Used when a gateway streams even though ``stream: false`` was requested.
+    Reasoning deltas are ignored; only ``delta.content`` is concatenated.
+    """
+    parts: list[str] = []
+    for line in body.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[len("data:") :].strip()
+        if not payload or payload == "[DONE]":
+            continue
+        try:
+            chunk = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        for choice in chunk.get("choices") or []:
+            delta = choice.get("delta") or {}
+            piece = delta.get("content")
+            if piece:
+                parts.append(piece)
+            if not delta and choice.get("message"):
+                message_content = choice["message"].get("content")
+                if message_content:
+                    parts.append(message_content)
+    return "".join(parts)
+
+
+def parse_chat_completion(response) -> tuple[str, dict[str, Any]]:
+    """Extract (content, usage) from a chat-completions response.
+
+    Handles both a normal JSON body and the SSE stream some gateways return
+    even when ``stream: false`` was requested.
+    """
+    if "text/event-stream" in response.headers.get("content-type", ""):
+        return _collect_sse_content(response.text), {}
+
+    data = response.json()
+    choices = data.get("choices") or []
+    content = choices[0].get("message", {}).get("content", "") if choices else ""
+    usage = data.get("usage") or {}
+    return content, usage
+
+
 class OpenAICompatible(Provider):
     """Provider that speaks the OpenAI chat completions API.
 
-    Covers: OpenAI, DeepSeek, Ollama, vLLM, DashScope/Qwen, LM Studio, etc.
+    Covers: OpenAI, DeepSeek, Ollama, vLLM, DashScope/Qwen, LM Studio,
+    Omniroute and other OpenAI-compatible gateways.
     """
 
     def __init__(
-        self, base_url: str, model: str, api_key: str, extra: dict[str, Any] | None = None
+        self, base_url: str, model: str, api_key: str = "", extra: dict[str, Any] | None = None
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -96,10 +174,10 @@ class OpenAICompatible(Provider):
     # ── Prompt construction ─────────────────────────────────────────────
 
     def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
 
     def _build_system_prompt(
         self,
@@ -148,8 +226,10 @@ class OpenAICompatible(Provider):
         if len(segments) > 1:
             example = ", ".join(f'"{s.id}": "<translation>"' for s in segments[:2])
             parts.append(
-                "Translate each <segment> below. Respond with a single JSON object "
-                "that maps EVERY segment id to its translation, and nothing else.\n"
+                "Translate the text inside each <segment> below. Respond with a single "
+                "JSON object that maps EVERY segment id to its translation, and nothing "
+                "else. Do not repeat the <segment> tags or the segment id in a "
+                "translation.\n"
                 f"Example shape: {{{example}}}\n"
             )
 
@@ -182,6 +262,9 @@ class OpenAICompatible(Provider):
                 {"role": "user", "content": user_prompt},
             ],
             "temperature": temperature,
+            # Ask for a single JSON response. Some gateways (Omniroute, for one)
+            # stream by default and would otherwise return text/event-stream.
+            "stream": False,
             **self.extra,
         }
         response = await client.post(
@@ -190,12 +273,9 @@ class OpenAICompatible(Provider):
             json=payload,
         )
         response.raise_for_status()
-        data = response.json()
-        choices = data.get("choices") or []
-        content = choices[0].get("message", {}).get("content", "") if choices else ""
-        usage = data.get("usage") or {}
-        return content, usage
+        return parse_chat_completion(response)
 
+    @staticmethod
     @staticmethod
     def _lookup_translation(mapping: dict[str, Any], seg: Segment, batch_size: int) -> str | None:
         """Pull one segment's translation out of a parsed response object."""
@@ -203,12 +283,12 @@ class OpenAICompatible(Provider):
         if isinstance(value, dict):
             value = value.get("translated")
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            return _clean_translation(value)
         # A single-segment response may use the flat {"translated": ...} shape.
         if batch_size == 1:
             flat = mapping.get("translated")
             if isinstance(flat, str) and flat.strip():
-                return flat.strip()
+                return _clean_translation(flat)
         return None
 
     # ── Provider interface ──────────────────────────────────────────────
@@ -291,13 +371,11 @@ class OpenAICompatible(Provider):
 
         mapping = extract_json_object(content)
         if mapping is None:
-            text = (content or "").strip()
-            return text or None
+            return _clean_translation(content or "") or None
         translation = mapping.get("translated")
         if isinstance(translation, str) and translation.strip():
-            return translation.strip()
-        text = (content or "").strip()
-        return text or None
+            return _clean_translation(translation)
+        return _clean_translation(content or "") or None
 
     async def proofread(self, segments: list[Segment], glossary: Glossary | None) -> list[Segment]:
         """Proofread translated segments, one request per segment."""

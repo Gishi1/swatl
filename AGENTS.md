@@ -6,7 +6,7 @@ swatl is an AI translation and proofreading studio for EPUB e-books. It reads an
 
 ## Status
 
-Repository initialized 2026-09-16. Translation core (Phase 1) through Web GUI redesign + Context DB (Phase 7) complete. 403 tests passing (incl. 9 browser e2e), ruff clean; CI green on Python 3.11 and 3.12. Context-aware embedding retrieval (Ollama + FAISS) wired into translation, and a full-featured web GUI with multi-panel layout.
+Repository initialized 2026-09-16. Translation core (Phase 1) through Web GUI redesign + Context DB (Phase 7) complete. 421 tests passing (incl. 9 browser e2e), ruff clean; CI green on Python 3.11 and 3.12. Context-aware embedding retrieval (Ollama + FAISS) wired into translation, and a full-featured web GUI with multi-panel layout.
 
 ## Commands
 

@@ -156,8 +156,9 @@ class Embedder:
         from openai import OpenAI
 
         if self._client is None:
+            # The SDK rejects an empty key; local endpoints ignore its value.
             self._client = OpenAI(
-                api_key=self.config.api_key,
+                api_key=self.config.api_key or "not-needed",
                 base_url=self.config.base_url or None,
             )
 

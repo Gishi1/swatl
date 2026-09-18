@@ -306,3 +306,45 @@ class TestContextCommands:
         result = self._invoke("context", "import", str(tmp_path / "nope.json"), "--state", "s")
         assert result.exit_code == 1
         assert "file not found" in result.output
+
+
+class TestKeylessProviders:
+    """Local gateways (Ollama, LM Studio) need no API key at all."""
+
+    def _write_config(self, tmp_path):
+        cfg = tmp_path / "providers.toml"
+        cfg.write_text(
+            "[localllm]\n"
+            'type = "openai-compatible"\n'
+            'base_url = "http://localhost:11434/v1"\n'
+            'model = "qwen2.5:32b"\n'
+            'api_key_env = ""\n',
+            encoding="utf-8",
+        )
+        return cfg
+
+    def test_empty_api_key_env_means_no_auth(self, tmp_path):
+        from swatl.config import get_api_key, load_providers
+
+        providers = load_providers(self._write_config(tmp_path))
+        assert get_api_key(providers["localllm"]) == ""
+
+    def test_missing_key_for_a_required_provider_still_fails(self, tmp_path):
+        import pytest
+
+        from swatl.config import get_api_key, load_providers
+
+        cfg = tmp_path / "providers.toml"
+        cfg.write_text('[cloud]\napi_key_env = "SWATL_DEFINITELY_UNSET_KEY"\n', encoding="utf-8")
+        with pytest.raises(OSError, match="API key not set"):
+            get_api_key(load_providers(cfg)["cloud"])
+
+    def test_provider_omits_authorization_without_a_key(self):
+        from swatl.providers.openai_compat import OpenAICompatible
+
+        headers = OpenAICompatible("http://localhost:11434/v1", "m", api_key="")._headers()
+        assert "Authorization" not in headers
+        assert headers["Content-Type"] == "application/json"
+
+        with_key = OpenAICompatible("https://api.x/v1", "m", api_key="k")._headers()
+        assert with_key["Authorization"] == "Bearer k"

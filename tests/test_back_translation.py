@@ -1,6 +1,7 @@
 """Tests for the back-translation quality verification module."""
 
 import asyncio
+import json
 
 import httpx
 
@@ -330,3 +331,55 @@ class TestBackTranslationRequests:
             back_translate_sample(segments, api_base_url="https://x/v1", api_key="k", sample_size=3)
         )
         assert report.segments_tested == 0
+
+
+class TestStreamingGatewayInterop:
+    """Gateways that stream by default must still work."""
+
+    def _segments(self, n=1):
+        return [
+            Segment(
+                id=f"p-{i:04d}",
+                doc="doc",
+                anchor=f".//p[{i}]",
+                tag="p",
+                source_text="这是中文原文。",
+                translated="This is the English translation.",
+                status="proofread",
+            )
+            for i in range(1, n + 1)
+        ]
+
+    def _patch(self, monkeypatch, handler):
+        real = httpx.AsyncClient
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", factory)
+
+    def test_request_asks_for_json(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"choices": [{"message": {"content": "中文"}}]})
+
+        self._patch(monkeypatch, handler)
+        asyncio.run(back_translate_segment(self._segments()[0], "https://x/v1", "k"))
+        assert seen["body"]["stream"] is False
+
+    def test_sse_response_is_parsed(self, monkeypatch):
+        sse = (
+            'data: {"choices":[{"delta":{"content":"宇宙"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"很大"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=sse, headers={"content-type": "text/event-stream"})
+
+        self._patch(monkeypatch, handler)
+        result = asyncio.run(back_translate_segment(self._segments()[0], "https://x/v1", "k"))
+        assert result.back_translated == "宇宙很大"

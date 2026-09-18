@@ -40,6 +40,8 @@ api_key_env = "ANTHROPIC_API_KEY"
 type = "openai-compatible"
 base_url = "http://localhost:11434/v1"
 model = "qwen2.5:32b"
+# Empty means the endpoint needs no authentication: no Authorization header
+# is sent and no environment variable has to be set.
 api_key_env = ""
 
 [dashscope]

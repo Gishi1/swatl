@@ -88,13 +88,20 @@ def load_embedding_config(config_path: str | Path | None = None):
 
 
 def get_api_key(provider: ProviderConfig) -> str:
-    """Read the API key from the provider's configured env var."""
-    env_name = provider.api_key_env or "SWATL_API_KEY"
-    key = os.environ.get(env_name, "")
+    """Read the API key from the provider's configured env var.
+
+    An empty ``api_key_env`` means the endpoint needs no authentication
+    (Ollama, LM Studio, and most local gateways); the returned key is then an
+    empty string and no Authorization header is sent.
+    """
+    if not provider.api_key_env:
+        return ""
+
+    key = os.environ.get(provider.api_key_env, "")
     if not key:
         raise OSError(
             f"API key not set for provider '{provider.model}' "
-            f"(env var '{env_name}') — set it before translating."
+            f"(env var '{provider.api_key_env}') — set it before translating."
         )
     return key
 

@@ -221,7 +221,18 @@ Provider configs are read from the first of:
 3. `./providers.toml`
 
 API keys are never stored in these files — only the name of the environment
-variable that holds them. See [`config/providers.example.toml`](config/providers.example.toml).
+variable that holds them. An **empty** `api_key_env` means the endpoint needs no
+authentication (Ollama, LM Studio, a LAN gateway): no `Authorization` header is
+sent and nothing has to be exported. See
+[`config/providers.example.toml`](config/providers.example.toml).
+
+```toml
+[omniroute]
+type = "openai-compatible"
+base_url = "http://gateway-host:20128/v1"
+model = "auto/cheap"
+api_key_env = ""
+```
 
 ## Supported providers
 
@@ -234,8 +245,12 @@ variable that holds them. See [`config/providers.example.toml`](config/providers
 | **DashScope** | Cloud (OpenAI-compatible) | `qwen3-mt`, a translation-specific model |
 | **mock** | Offline | Deterministic, credential-free; used by the test suite |
 
-Any other endpoint that speaks the OpenAI chat-completions API works by adding
-a provider entry.
+Any endpoint that speaks the OpenAI chat-completions API works by adding a
+provider entry — including multi-model gateways such as Omniroute and LiteLLM,
+which can route one model name across many upstream providers. Two details make
+this seamless: swatl always asks for a non-streaming response but will assemble
+an SSE stream if a gateway ignores that, and leaving `api_key_env` empty means
+"no authentication", so local gateways need no dummy key.
 
 ## Development
 
@@ -268,7 +283,7 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 403, including 9 browser end-to-end tests |
+| Tests | 421, including 9 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
 | CLI commands | 12 |

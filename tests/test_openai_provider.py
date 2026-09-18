@@ -284,3 +284,116 @@ def test_extract_json_object_handles_llm_noise(raw):
 def test_extract_json_object_returns_none_for_garbage():
     assert extract_json_object("no json here") is None
     assert extract_json_object("") is None
+
+
+class TestStreamingGatewayInterop:
+    """Some OpenAI-compatible gateways stream unless told not to."""
+
+    def test_request_asks_for_a_non_streaming_response(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return _chat_response(json.dumps({"p-0001": "x"}))
+
+        _patch_transport(monkeypatch, handler)
+        asyncio.run(_provider().translate(_segments(1), None, "en", None))
+        assert seen["body"]["stream"] is False
+
+    def test_sse_response_is_assembled(self, monkeypatch):
+        """A gateway that ignores stream=false still yields usable text."""
+        sse = "\n\n".join(
+            [
+                'data: {"choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}',
+                'data: {"choices":[{"index":0,"delta":{"reasoning_content":"thinking"}}]}',
+                'data: {"choices":[{"index":0,"delta":{"content":"{\\"p-0001\\": "}}]}',
+                'data: {"choices":[{"index":0,"delta":{"content":"\\"Three-Body\\"}"}}]}',
+                "data: [DONE]",
+            ]
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, text=sse, headers={"content-type": "text/event-stream"})
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].translated == "Three-Body"
+        assert result[0].status == SegmentStatus.TRANSLATED
+
+    def test_sse_without_content_is_handled(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                text='data: {"choices":[{"delta":{"reasoning_content":"hmm"}}]}\n\ndata: [DONE]',
+                headers={"content-type": "text/event-stream"},
+            )
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+        # Falls back to the single-segment request, which also streams empty,
+        # so the segment ends up failed rather than raising.
+        assert result[0].status in (SegmentStatus.FAILED, SegmentStatus.TRANSLATED)
+
+    def test_collect_sse_content_directly(self):
+        from swatl.providers.openai_compat import _collect_sse_content
+
+        body = (
+            'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n'
+            "data: [DONE]\n\n"
+        )
+        assert _collect_sse_content(body) == "Hello"
+        assert _collect_sse_content("") == ""
+        assert _collect_sse_content("data: not-json\n\n") == ""
+
+
+class TestTranslationCleanup:
+    """Models sometimes echo the segment scaffolding into the answer."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ('<segment id="p-0001">Hello</segment>', "Hello"),
+            ('<segment id="p-0001">\nHello\n</segment>\n', "Hello"),
+            ("<segment>Hello</segment>", "Hello"),
+            ("```\nHello\n```", "Hello"),
+            ("```json\nHello\n```", "Hello"),
+            ("  Hello  ", "Hello"),
+            ("Hello <segment> world", "Hello <segment> world"),  # not a wrapper
+        ],
+    )
+    def test_clean_translation(self, raw, expected):
+        from swatl.providers.openai_compat import _clean_translation
+
+        assert _clean_translation(raw) == expected
+
+    def test_wrapped_values_are_cleaned_during_translation(self, monkeypatch):
+        """Regression: a real gateway returned the wrapper inside the value."""
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            ids = SEGMENT_ID_RE.findall(body["messages"][-1]["content"])
+            mapping = {sid: f'<segment id="{sid}">Translated {sid}</segment>' for sid in ids}
+            return _chat_response(json.dumps(mapping))
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(3), None, "en", None))
+        assert [s.translated for s in result] == [
+            "Translated p-0001",
+            "Translated p-0002",
+            "Translated p-0003",
+        ]
+
+    def test_the_prompt_asks_models_not_to_echo_tags(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            seen["prompt"] = body["messages"][-1]["content"]
+            ids = SEGMENT_ID_RE.findall(seen["prompt"])
+            return _chat_response(json.dumps({sid: "x" for sid in ids}))
+
+        _patch_transport(monkeypatch, handler)
+        asyncio.run(_provider().translate(_segments(2), None, "en", None))
+        assert "Do not repeat the <segment> tags" in seen["prompt"]

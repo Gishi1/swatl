@@ -16,6 +16,14 @@ from swatl.models import Segment
 logger = logging.getLogger(__name__)
 
 
+def _auth_headers(api_key: str) -> dict[str, str]:
+    """JSON headers, with Authorization only when a key is configured."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
 @dataclass
 class BackTranslationResult:
     """Result of back-translating a single segment."""
@@ -80,14 +88,13 @@ async def back_translate_segment(
     """Back-translate a single segment using an LLM API."""
     # Same endpoint convention as the translation provider: base_url already
     # includes any version prefix (e.g. ".../v1").
+    from swatl.providers.openai_compat import parse_chat_completion
+
     base_url = api_base_url.rstrip("/")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
             f"{base_url}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=_auth_headers(api_key),
             json={
                 "model": model,
                 "messages": [
@@ -104,11 +111,13 @@ async def back_translate_segment(
                         "content": segment.translated or "",
                     },
                 ],
+                # Some gateways stream unless told otherwise.
+                "stream": False,
             },
         )
         response.raise_for_status()
-        data = response.json()
-        back_translated = data["choices"][0]["message"]["content"].strip()
+        content, _usage = parse_chat_completion(response)
+        back_translated = (content or "").strip()
 
     similarity = _levenshtein_similarity(segment.source_text, back_translated)
 
