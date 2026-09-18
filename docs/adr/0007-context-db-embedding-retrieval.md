@@ -82,15 +82,15 @@ Each ContextDB entry stores:
 ```python
 @pydantic.dataclasses.dataclass
 class ContextEntry:
-    segment_id: str          # e.g., "p-0041"
-    doc: str                 # e.g., "text/ch01.xhtml"
-    anchor: str              # e.g., ".//p[4]"
-    source_lang: str         # e.g., "zh"
-    source_text: str         # original text
-    translated_text: str     # translated text
-    embedding: list[float]   # embedding vector (dim=768 or 256)
-    glossary_terms: list[str] # matched glossary terms for keyword boost
-    stage: str               # "translated" or "proofread"
+    segment_id: str  # e.g., "p-0041"
+    doc: str  # e.g., "text/ch01.xhtml"
+    anchor: str  # e.g., ".//p[4]"
+    source_lang: str  # e.g., "zh"
+    source_text: str  # original text
+    translated_text: str  # translated text
+    embedding: list[float]  # embedding vector (dim=768 or 256)
+    glossary_terms: list[str]  # matched glossary terms for keyword boost
+    stage: str  # "translated" or "proofread"
 ```
 
 ### Retrieval Strategy

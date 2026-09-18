@@ -235,14 +235,14 @@ Users can edit multiple entries at once via a table view:
 ```python
 @pydantic.dataclasses.dataclass
 class ContextEntry:
-    id: str                          # UUID v4
-    source_text: str                 # text to embed
-    translated_text: str | None      # optional target translation
-    entry_type: str                  # "segment" | "prefill" | "manual" | "curated"
-    source_file: str | None          # filename or URL for prefill entries
-    section: str | None              # paragraph/section reference
+    id: str  # UUID v4
+    source_text: str  # text to embed
+    translated_text: str | None  # optional target translation
+    entry_type: str  # "segment" | "prefill" | "manual" | "curated"
+    source_file: str | None  # filename or URL for prefill entries
+    section: str | None  # paragraph/section reference
     tags: list[str] = Field(default_factory=list)  # user-defined categories
-    similarity_score: float | None   # from last retrieval (for analytics)
+    similarity_score: float | None  # from last retrieval (for analytics)
     created_at: str
     updated_at: str
 ```

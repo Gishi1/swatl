@@ -307,10 +307,14 @@ Heuristic checks:
 
 ```python
 class Provider(Protocol):
-    async def translate(self, segments: list[Segment], glossary: Glossary,
-                        target_lang: str, system_prompt: str) -> list[TranslatedSegment]: ...
-    async def proofread(self, segments: list[Segment], glossary: Glossary) -> list[ProofreadSegment]: ...
+    async def translate(
+        self, segments: list[Segment], glossary: Glossary, target_lang: str, system_prompt: str
+    ) -> list[TranslatedSegment]: ...
+    async def proofread(
+        self, segments: list[Segment], glossary: Glossary
+    ) -> list[ProofreadSegment]: ...
     async def test(self) -> ProviderHealth: ...
+
 
 class ProviderHealth(TypedDict):
     ok: bool
