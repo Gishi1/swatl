@@ -34,6 +34,18 @@ TRANSLATABLE_TAGS = {
     "cite",
     "code",
     "abbr",
+    "caption",
+    "a",  # link text, including EPUB3 navigation entries
+    # Common inline elements: their text belongs to the surrounding paragraph.
+    "span",
+    "b",
+    "i",
+    "u",
+    "s",
+    "small",
+    "q",
+    "sub",
+    "sup",
 }
 
 # Skip these entirely
@@ -56,15 +68,76 @@ SKIP_TAGS = {
 # Regex for building XPath-like anchors
 _TAG_RE = re.compile(r"^[a-z]+$", re.IGNORECASE)
 
+# Inline elements whose following text node ("tail") is part of the same
+# paragraph and must therefore be translated as its own segment. Every entry
+# must also be in TRANSLATABLE_TAGS: translating a tail while leaving the
+# inline element itself in the source language would produce mixed output.
+INLINE_TAGS = {
+    "a",
+    "abbr",
+    "b",
+    "cite",
+    "code",
+    "em",
+    "i",
+    "q",
+    "s",
+    "small",
+    "span",
+    "strong",
+    "sub",
+    "sup",
+    "u",
+}
+
+assert INLINE_TAGS <= TRANSLATABLE_TAGS, INLINE_TAGS - TRANSLATABLE_TAGS
+
+# Suffix appended to an anchor that addresses an element's tail text node.
+TAIL_MARKER = "#tail"
+
+_ENCODING_DECL_RE = re.compile(rb"""encoding=["']([\w-]+)["']""", re.IGNORECASE)
+_CHARSET_RE = re.compile(rb"""charset=["']?([\w-]+)""", re.IGNORECASE)
+
+
+def detect_document_encoding(path: Path) -> str | None:
+    """Return the encoding declared in a content document, if any."""
+    try:
+        head = Path(path).read_bytes()[:4096]
+    except OSError:  # pragma: no cover - defensive
+        return None
+    match = _ENCODING_DECL_RE.search(head) or _CHARSET_RE.search(head)
+    if not match:
+        return None
+    try:
+        return match.group(1).decode("ascii")
+    except UnicodeDecodeError:  # pragma: no cover - defensive
+        return None
+
+
+def parse_xhtml(path: Path):
+    """Parse an XHTML content document into an lxml tree.
+
+    EPUB requires content documents to be UTF-8 or UTF-16, but libxml2's HTML
+    parser falls back to Latin-1 when no encoding is declared, silently
+    mangling CJK text. Honour the document's declaration and otherwise assume
+    UTF-8.
+    """
+    encoding = detect_document_encoding(path) or "utf-8"
+    return html.parse(str(path), parser=html.HTMLParser(encoding=encoding))
+
+
 # Language pair direction hints
 _ZH_LANGS = {"zh", "zh-cn", "zh-tw", "zh-hans", "zh-hant", "cmn"}
 _EN_LANGS = {"en", "en-us", "en-gb", "en-au"}
 
 
 def build_segment_anchor(body: Any, element: Any) -> str:
-    """Build a relative XPath anchor from <body> root to *element*.
+    """Build an XPath anchor to *element*.
 
-    Uses positional indexing: e.g. ".//p[4]", ".//h1[1]", ".//li[2]".
+    Elements inside ``<body>`` get a relative anchor such as ``.//p[4]``
+    (resolved with ``body.xpath(...)``). Elements outside it — the document
+    ``<title>``, for instance — get an absolute anchor such as
+    ``/html/head/title[1]`` (resolved with ``root.xpath(...)``).
 
     The index is the element's position among its *siblings* of the same tag,
     which is exactly what ``body.xpath(".//p[4]")`` resolves back to. Counting
@@ -72,17 +145,23 @@ def build_segment_anchor(body: Any, element: Any) -> str:
     document that only has four ``<p>`` children of ``<body>``, so write-back
     silently skipped those segments.
     """
-    # Walk up from element to body, collecting positional info
+    # Walk up until we reach <body> (relative anchor) or the document root.
     ancestors = []
     current = element
+    inside_body = False
     while current is not None:
         ancestors.append(current)
         if current is body:
+            inside_body = True
             break
         current = current.getparent()
 
     ancestors.reverse()
-    ancestors = ancestors[1:]  # exclude body itself
+    if inside_body:
+        ancestors = ancestors[1:]  # exclude body itself
+        prefix = ".//"
+    else:
+        prefix = "/"
 
     path_parts: list[str] = []
     for node in ancestors:
@@ -104,7 +183,7 @@ def build_segment_anchor(body: Any, element: Any) -> str:
     if not path_parts:
         return "./*[1]"  # fallback
 
-    return ".//" + "/".join(path_parts)
+    return prefix + "/".join(path_parts)
 
 
 def extract_segments_from_doc(
@@ -125,7 +204,23 @@ def extract_segments_from_doc(
     segments: list[Segment] = []
     counter = start_index
 
+    def _emit(element, text: str, anchor: str, tag: str, part: str) -> None:
+        nonlocal counter
+        counter += 1
+        segments.append(
+            Segment(
+                id=f"{tag}-{counter:04d}",
+                doc=doc_path,
+                anchor=anchor,
+                tag=tag,
+                source_text=text,
+                part=part,
+            )
+        )
+
     for element in body.iter():
+        if not isinstance(element.tag, str):
+            continue
         tag = element.tag.lower()
 
         # Skip non-text and unwanted elements
@@ -134,29 +229,47 @@ def extract_segments_from_doc(
         if tag not in TRANSLATABLE_TAGS:
             continue
 
-        # Check for empty or whitespace-only text
-        text = (element.text or "").strip()
-        if not text:
-            continue
-
-        # Build anchor
         anchor = build_segment_anchor(body, element)
 
-        # Generate stable ID
-        counter += 1
-        seg_id = f"{tag}-{counter:04d}"
+        # The element's own text node.
+        text = (element.text or "").strip()
+        if text:
+            _emit(element, text, anchor, tag, "text")
 
-        segments.append(
-            Segment(
-                id=seg_id,
-                doc=doc_path,
-                anchor=anchor,
-                tag=tag,
-                source_text=text,
-            )
-        )
+        # Text sitting after an inline element is a separate text node with no
+        # addressable parent of its own; without this the tail would stay in
+        # the source language inside an otherwise translated paragraph.
+        if tag in INLINE_TAGS:
+            tail = (element.tail or "").strip()
+            if tail:
+                _emit(element, tail, anchor + TAIL_MARKER, tag, "tail")
+
+    # Document <title> lives outside <body>; translate it too so reader tabs
+    # and chapter lists are not left in the source language.
+    root = body.getroottree().getroot() if hasattr(body, "getroottree") else None
+    if root is not None and root is not body:
+        for element in root.iter():
+            if not isinstance(element.tag, str) or element.tag.lower() != "title":
+                continue
+            text = (element.text or "").strip()
+            if not text:
+                continue
+            _emit(element, text, build_segment_anchor(body, element), "title", "text")
 
     return segments, counter
+
+
+def _resolve_doc(epub_dir: Path, href: str) -> Path | None:
+    """Resolve a manifest/spine href to an existing file inside the EPUB."""
+    candidate = epub_dir / href
+    if candidate.exists():
+        return candidate
+    if not href.endswith(".xhtml"):
+        candidate = epub_dir / f"{href}.xhtml"
+        if candidate.exists():
+            return candidate
+    candidate = epub_dir / f"{href}.html"
+    return candidate if candidate.exists() else None
 
 
 def extract_segments_from_epub(
@@ -164,8 +277,14 @@ def extract_segments_from_epub(
     spine_items: list[str],
     manifest: dict[str, str],
     book_language: str = "zh",
+    extra_docs: list[str] | None = None,
 ) -> tuple[list[Segment], int]:
     """Extract segments from all spine XHTML documents.
+
+    ``extra_docs`` are additional documents segmented after the spine — the
+    EPUB3 navigation document, for example, so the reader's table of contents
+    is translated too. They are processed last so spine segment ids stay
+    stable regardless of whether a nav document exists.
 
     Returns (segments, total_doc_count).
     """
@@ -173,27 +292,25 @@ def extract_segments_from_epub(
     global_counter = 0
     doc_count = 0
 
-    for href in spine_items:
-        # Resolve: href might be relative or have extensions
-        candidate = epub_dir / href
-        if not candidate.exists():
-            # Try with .xhtml extension
-            if href.endswith(".xhtml"):
-                candidate = epub_dir / href
-            else:
-                candidate = epub_dir / f"{href}.xhtml"
-            if not candidate.exists():
-                candidate = epub_dir / f"{href}.html"
+    ordered_docs = list(spine_items)
+    for href in extra_docs or []:
+        if href not in ordered_docs:
+            ordered_docs.append(href)
 
-        if not candidate.exists():
-            logger.warning("Spine item not found, skipping: %s", href)
+    for href in ordered_docs:
+        candidate = _resolve_doc(epub_dir, href)
+        if candidate is None:
+            if href in spine_items:
+                logger.warning("Spine item not found, skipping: %s", href)
+            else:
+                logger.warning("Document not found, skipping: %s", href)
             continue
 
         doc_count += 1
         rel_path = str(candidate.relative_to(epub_dir))
 
         try:
-            tree = html.parse(str(candidate))
+            tree = parse_xhtml(candidate)
             body = tree.find(".//body")
             if body is None:
                 # Try root element

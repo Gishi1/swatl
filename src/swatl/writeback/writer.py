@@ -8,6 +8,7 @@ from pathlib import Path
 
 from lxml import html
 
+from swatl.ingest.segmenter import TAIL_MARKER, parse_xhtml
 from swatl.models import Segment
 
 logger = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ def _write_bilingual_doc(
     """Create a bilingual copy of the document with translated paragraphs."""
     from lxml import etree, html
 
-    tree = html.parse(str(source_path))
+    tree = parse_xhtml(source_path)
     root = tree.getroot()
     body = root.find(".//body")
     if body is None:
@@ -224,7 +225,7 @@ def _write_bilingual_doc(
 
 def _write_document(path: Path, segments: list[Segment], target_lang: str) -> None:
     """Replace text content in a single XHTML document and persist the result."""
-    tree = html.parse(str(path))
+    tree = parse_xhtml(path)
     root = tree.getroot()
     body = tree.find(".//body")
     if body is None:
@@ -237,7 +238,15 @@ def _write_document(path: Path, segments: list[Segment], target_lang: str) -> No
     replaced = 0
     for seg in segments:
         try:
-            elements = body.xpath(seg.anchor)
+            anchor = seg.anchor
+            is_tail = anchor.endswith(TAIL_MARKER)
+            if is_tail:
+                anchor = anchor[: -len(TAIL_MARKER)]
+
+            # Absolute anchors (e.g. /html/head/title[1]) are resolved from the
+            # document root; everything else from <body>.
+            context = root if anchor.startswith("/") else body
+            elements = context.xpath(anchor)
             if not elements:
                 logger.warning("Anchor not found for segment %s: %s", seg.id, seg.anchor)
                 continue
@@ -247,11 +256,12 @@ def _write_document(path: Path, segments: list[Segment], target_lang: str) -> No
             element = elements[0]
             if len(elements) > 1:
                 source = seg.source_text.strip()
+                attr = "tail" if is_tail else "text"
                 element = next(
-                    (e for e in elements if (e.text or "").strip() == source),
+                    (e for e in elements if (getattr(e, attr) or "").strip() == source),
                     elements[0],
                 )
-            _replace_text(element, seg.translated or "", target_lang)
+            _replace_text(element, seg.translated or "", target_lang, is_tail=is_tail)
             replaced += 1
 
         except Exception as e:
@@ -283,22 +293,28 @@ def _serialize_document(tree, root, path: Path) -> None:
         f.write(body)
 
 
-def _replace_text(element: html.HtmlElement, translated: str, target_lang: str) -> None:
-    """Replace an element's own text, preserving any nested inline markup.
+def _replace_text(
+    element: html.HtmlElement, translated: str, target_lang: str, is_tail: bool = False
+) -> None:
+    """Replace an element's own text or tail, preserving nested markup.
 
-    A segment's ``source_text`` is the element's direct text node, so the
-    replacement must only touch ``element.text``. Replacing the whole element
-    (as an earlier implementation did) discarded nested ``<em>``, ``<strong>``
-    or ``<a>`` children.
+    A segment's ``source_text`` is a single text node of the element (its own
+    text, or the text that follows it inside the parent), so the replacement
+    must only touch that node. Replacing the whole element (as an earlier
+    implementation did) discarded nested ``<em>``, ``<strong>`` or ``<a>``
+    children.
     """
-    element.text = translated
+    if is_tail:
+        element.tail = translated
+    else:
+        element.text = translated
     if target_lang:
         element.set("xml:lang", target_lang)
 
 
 def _set_lang(path: Path, target_lang: str) -> None:
     """Set xml:lang and lang attributes on an XHTML document."""
-    tree = html.parse(str(path))
+    tree = parse_xhtml(path)
     root = tree.getroot()
 
     # Set on html element

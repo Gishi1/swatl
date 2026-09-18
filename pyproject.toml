@@ -46,6 +46,11 @@ dev = [
     "pytest-asyncio>=0.25",
     "ruff>=0.9",
 ]
+# Optional browser-driven GUI tests (tests/e2e). Needs a Chromium download:
+#   uv sync --extra e2e && uv run playwright install chromium
+e2e = [
+    "playwright>=1.40",
+]
 
 [project.scripts]
 swatl = "swatl.cli:main"

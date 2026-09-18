@@ -163,14 +163,19 @@ class TestAnchorResolution:
         return tree.find(".//body")
 
     def test_every_anchor_resolves_to_its_source_text(self, tmp_path):
+
         from swatl.ingest.segmenter import extract_segments_from_doc
 
         body = self._doc_with_nested_paragraphs(tmp_path)
+        root = body.getroottree().getroot()
         segments, _ = extract_segments_from_doc("doc.xhtml", body)
 
-        assert len(segments) == 9
+        # 9 body elements + the document <title>
+        assert len(segments) == 10
+        assert [s.tag for s in segments].count("title") == 1
         for seg in segments:
-            matches = body.xpath(seg.anchor)
+            context = root if seg.anchor.startswith("/") else body
+            matches = context.xpath(seg.anchor)
             assert matches, f"anchor did not resolve: {seg.id} -> {seg.anchor}"
             assert matches[0].text.strip() == seg.source_text
 
@@ -184,3 +189,135 @@ class TestAnchorResolution:
         # The paragraph inside <blockquote> must not consume a body-level index.
         assert ".//blockquote[1]/p[1]" in anchors
         assert ".//p[4]" in anchors
+
+
+class TestNavigationAndTitleSegmentation:
+    """EPUB3 nav documents and <title> elements must be translatable."""
+
+    def _extract(self, tmp_path):
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        from fixtures.create_fixture import create_epub3_fixture
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+
+        book = create_epub3_fixture(tmp_path / "book3.epub")
+        info, epub_dir = extract_epub(book)
+        segments, doc_count = extract_segments_from_epub(
+            epub_dir,
+            info.spine_items,
+            info.mime_types,
+            info.language,
+            extra_docs=info.nav_items,
+        )
+        return info, epub_dir, segments, doc_count
+
+    def test_nav_document_is_detected(self, tmp_path):
+        info, _dir, _segs, _n = self._extract(tmp_path)
+        assert info.nav_items == ["nav.xhtml"]
+        assert "nav.xhtml" not in info.spine_items
+
+    def test_nav_and_title_are_segmented(self, tmp_path):
+        _info, _dir, segments, doc_count = self._extract(tmp_path)
+        assert doc_count == 2
+
+        docs = {s.doc for s in segments}
+        assert docs == {"text/ch01.xhtml", "nav.xhtml"}
+
+        # Link text inside the nav document is extracted.
+        nav_links = [s for s in segments if s.doc == "nav.xhtml" and s.tag == "a"]
+        assert [s.source_text for s in nav_links] == ["第一章：三体世界"]
+
+        # Document titles are extracted with an absolute anchor.
+        titles = [s for s in segments if s.tag == "title"]
+        assert {s.doc for s in titles} == {"text/ch01.xhtml", "nav.xhtml"}
+        assert all(s.anchor.startswith("/html") for s in titles)
+
+    def test_every_anchor_resolves_including_titles(self, tmp_path):
+        from lxml import html as lhtml
+
+        _info, epub_dir, segments, _n = self._extract(tmp_path)
+        for doc in {s.doc for s in segments}:
+            tree = lhtml.parse(str(epub_dir / doc))
+            root = tree.getroot()
+            body = tree.find(".//body")
+            for seg in [s for s in segments if s.doc == doc]:
+                context = root if seg.anchor.startswith("/") else body
+                matches = context.xpath(seg.anchor)
+                assert matches, f"{seg.id} anchor did not resolve: {seg.anchor}"
+                assert matches[0].text.strip() == seg.source_text
+
+    def test_spine_ids_are_stable_without_nav(self, tmp_path):
+        """Adding a nav document must not renumber spine segments."""
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        from fixtures.create_fixture import create_epub3_fixture
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+
+        book = create_epub3_fixture(tmp_path / "book3.epub")
+        info, epub_dir = extract_epub(book)
+        with_nav, _ = extract_segments_from_epub(
+            epub_dir, info.spine_items, info.mime_types, info.language, extra_docs=info.nav_items
+        )
+        without_nav, _ = extract_segments_from_epub(
+            epub_dir, info.spine_items, info.mime_types, info.language
+        )
+        spine_ids_with = [s.id for s in with_nav if s.doc == "text/ch01.xhtml"]
+        spine_ids_without = [s.id for s in without_nav if s.doc == "text/ch01.xhtml"]
+        assert spine_ids_with == spine_ids_without
+
+
+class TestInlineTailsAndEncoding:
+    """Inline tails must be segmented, and parsing must not assume Latin-1."""
+
+    def _doc(self, tmp_path, text: str, declared: bool = False):
+        doc = tmp_path / "d.xhtml"
+        meta = '<meta charset="UTF-8"/>' if declared else ""
+        doc.write_text(
+            f"<html><head>{meta}<title>标题</title></head><body>{text}</body></html>",
+            encoding="utf-8",
+        )
+        return doc
+
+    def test_utf8_without_declaration_is_not_mangled(self, tmp_path):
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<p>点击这里继续</p>", declared=False)
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+        assert [s.source_text for s in segments if s.tag == "p"] == ["点击这里继续"]
+
+    def test_declared_charset_is_honoured(self, tmp_path):
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<p>点击这里继续</p>", declared=True)
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+        assert [s.source_text for s in segments if s.tag == "p"] == ["点击这里继续"]
+
+    def test_tail_after_inline_element_is_segmented(self, tmp_path):
+        from swatl.ingest.segmenter import TAIL_MARKER, extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<p>点击<em>这里</em>继续阅读。</p>")
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        parts = {(s.tag, s.part): s.source_text for s in segments}
+        assert parts[("p", "text")] == "点击"
+        assert parts[("em", "text")] == "这里"
+        assert parts[("em", "tail")] == "继续阅读。"
+
+        tails = [s for s in segments if s.part == "tail"]
+        assert len(tails) == 1
+        assert tails[0].anchor.endswith(TAIL_MARKER)
+
+    def test_whitespace_only_tail_is_ignored(self, tmp_path):
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<p>文字<em>强调</em>  <span>另一段</span></p>")
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+        assert [s for s in segments if s.part == "tail"] == []

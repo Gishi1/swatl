@@ -33,6 +33,7 @@ class EpubInfo:
     epub_version: str = ""
     spine_items: list[str]  # list of href paths in spine order
     mime_types: dict[str, str]  # path → media_type from manifest
+    nav_items: list[str]  # EPUB3 navigation document(s), not part of the spine
 
     def __init__(
         self,
@@ -42,6 +43,7 @@ class EpubInfo:
         epub_version: str,
         spine_items: list[str],
         mime_types: dict[str, str],
+        nav_items: list[str] | None = None,
     ):
         self.title = title
         self.author = author
@@ -49,6 +51,7 @@ class EpubInfo:
         self.epub_version = epub_version
         self.spine_items = spine_items
         self.mime_types = mime_types
+        self.nav_items = nav_items or []
 
 
 def extract_epub(
@@ -167,6 +170,7 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
 
     # ── Manifest (media types) ──
     manifest: dict[str, str] = {}
+    nav_items: list[str] = []
     manifest_elem = root.find(_q("manifest"))
     if manifest_elem is not None:
         for item in manifest_elem.findall(_q("item")):
@@ -177,6 +181,9 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
                 manifest[href] = media_type
                 if media_type:
                     manifest[f"id:{item_id}"] = media_type
+                properties = item.get("properties", "") or ""
+                if "nav" in properties.split():
+                    nav_items.append(href)
 
     # ── Spine ──
     spine_items: list[str] = []
@@ -207,6 +214,9 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
 
     epub_version = _detect_version(root)
 
+    # A navigation document that is also in the spine is already segmented.
+    nav_items = [href for href in nav_items if href not in spine_items]
+
     return EpubInfo(
         title=title,
         author=author,
@@ -214,6 +224,7 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
         epub_version=epub_version,
         spine_items=spine_items,
         mime_types=manifest,
+        nav_items=nav_items,
     )
 
 

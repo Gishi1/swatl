@@ -189,6 +189,25 @@ uv run ruff format --check .
 uv run ruff format .
 ```
 
+### Browser (end-to-end) tests
+
+`tests/e2e/` drives a real Chromium against a real server. It is optional and
+skips itself when Playwright is absent:
+
+```bash
+uv sync --extra e2e
+uv run playwright install chromium
+uv run pytest tests/e2e -q
+```
+
+### Validating an export
+
+```bash
+# Read the exported EPUB with Calibre (if installed)
+ebook-meta translated.epub        # should report the target language
+ebook-convert translated.epub out.txt
+```
+
 On NixOS (externally managed Python), use the `nix-shell` recipe in
 [AGENTS.md](AGENTS.md) instead of a bare `uv venv`.
 
@@ -196,9 +215,9 @@ On NixOS (externally managed Python), use the `nix-shell` recipe in
 
 | Metric | Value |
 |---|---|
-| Source files | 39 Python files, ~6.2k lines (13 modules) |
-| Test files | 26 |
-| Tests | 301 (all passing) |
+| Source files | 39 Python files, ~6.5k lines (13 modules) |
+| Test files | 27 (incl. browser e2e) |
+| Tests | 320 (all passing) |
 | Lint | `ruff check` — 0 errors |
 | Format | `ruff format --check` — clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
@@ -207,13 +226,19 @@ On NixOS (externally managed Python), use the `nix-shell` recipe in
 
 ## Known Limitations
 
-- Only spine documents are translated. The EPUB3 navigation document (table of
-  contents) and `<head><title>` elements keep their source language, so a
-  translated book can still show source-language chapter names in a reader's TOC.
 - The quality audit is heuristic: it flags likely problems, it does not prove correctness.
 - Back-translation similarity is lexical overlap, not a learned metric.
 - Context-aware embedding retrieval downloads a sentence-transformers model on first use.
 - The web GUI targets a single local user: it binds to `127.0.0.1` and has no authentication.
+- EPUB2 NCX (`toc.ncx`) navigation labels are not translated; EPUB3 nav documents are.
+
+### What gets translated
+
+Spine documents, the EPUB3 navigation document, and `<head><title>` elements are
+translated. Within a document, text is handled per text node: an element's own
+text, the text of common inline elements (`em`, `strong`, `a`, `span`, `b`, `i`,
+`sup`, …), and the text that follows them. Images, CSS, fonts and all other
+markup are copied through unchanged.
 
 ## License
 

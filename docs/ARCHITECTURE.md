@@ -122,20 +122,25 @@ See `docs/adr/` for full ADRs.
 One JSON object per line, one segment per file. Append-only:
 
 ```json
-{"id":"p-0041","doc":"text/ch01.xhtml","anchor":".//p[4]","tag":"p","source_text":"三体是一个宏大的概念。","translated":"Three-Body is a grand concept.","status":"proofread","provider":"deepseek","tokens_in":18,"tokens_out":12,"context":null,"glossary_hits":["三体"]}
+{"id":"p-0041","doc":"text/ch01.xhtml","anchor":".//p[4]","tag":"p","source_text":"三体是一个宏大的概念。","translated":"Three-Body is a grand concept.","status":"proofread","part":"text","provider":"deepseek","tokens_in":18,"tokens_out":12,"context":null,"glossary_hits":["三体"]}
 ```
 
 ### 5.2 `run.json`
 
 ```json
 {
-  "book": {"title":"三体","author":"刘慈欣","lang":"zh","version":"EPUB 3.0"},
+  "book_title": "三体",
+  "book_author": "刘慈欣",
+  "book_lang": "zh",
+  "book_version": "EPUB 3.0",
   "pair": ["zh", "en"],
-  "provider": "deepseek",
-  "created_at": "2025-07-20T14:30:00Z",
-  "updated_at": "2025-07-20T15:12:00Z",
+  "provider": "deepseek-chat",
+  "epub_path": "/books/santi.epub",
+  "state_dir": "/tmp/swatl-8f3c1a",
+  "created_at": "2026-01-20T14:30:00+00:00",
+  "updated_at": "2026-01-20T15:12:00+00:00",
   "total_segments": 1247,
-  "stages_completed": ["extract", "translate", "proofread", "audit", "writeback"],
+  "stages_completed": ["extract", "translate", "proofread", "audit", "review"],
   "total_tokens_in": 48320,
   "total_tokens_out": 39210,
   "estimated_cost_usd": 0.24
@@ -151,23 +156,31 @@ One JSON object per line, one segment per file. Append-only:
 1. `zipfile.ZipFile` → extract to temp dir.
 2. Find `META-INF/container.xml` → locate `content.opf`.
 3. Parse `content.opf` → extract `<spine>` order (document sequence).
-4. For each `.xhtml` in spine order:
-   - Parse with `lxml.html.fromstring()`.
-   - Walk `<body>` for translatable tags (`<p>`, `<h1>`–`<h6>`, `<blockquote>`, `<li>`, `<figcaption>`).
-   - Build XPath anchor: relative path from `<body>` root, e.g., `.//p[4]`.
-   - Extract `text_content()` or first text node for mixed-content elements.
-   - Record element tag and language attributes.
+4. For each `.xhtml` in spine order (plus the EPUB3 nav document and any
+   extra documents, processed last so spine ids stay stable):
+   - Parse with an explicit encoding (declared, else UTF-8 — libxml2 would
+     otherwise fall back to Latin-1 and mangle CJK).
+   - Walk `<body>` for translatable tags (`<p>`, `<h1>`–`<h6>`, `<blockquote>`,
+     `<li>`, `<figcaption>`, and common inline tags such as `<em>`, `<a>`,
+     `<span>`).
+   - Build an XPath anchor. Elements inside `<body>` get a relative anchor,
+     e.g. `.//p[4]`; elements outside it (the document `<title>`) get an
+     absolute one, e.g. `/html[1]/head[1]/title[1]`. An inline element's
+     trailing text node is a separate segment whose anchor ends in `#tail`.
+   - Skip whitespace-only text nodes.
 
 ### 6.2 Write-back
 
 1. Re-parse each XHTML file from temp dir (original, untouched).
 2. For each segment: find element via `lxml.xpath(anchor)`.
-3. Handle mixed content:
-   - Pure text: replace `elem.text` directly.
-   - Mixed (e.g., `<p>前 <b>三体</b> 是一个...</p>`): wrap translated text in `<span xml:lang="en">...</span>` or replace `elem.text` and handle `elem.tail` for trailing content.
-4. Set `lang="en"` and `xml:lang="en"` on the root `<html>` element.
+3. Replace only the text node the segment came from: `elem.text` for a normal
+   segment, `elem.tail` when the anchor ends in `#tail`. Nested inline markup
+   (`<em>`, `<a>`, …) is preserved because the element itself is never removed.
+4. Set `lang="en"` and `xml:lang="en"` on the modified documents, and update
+   `<dc:language>` in the OPF.
 5. Preserve all non-text elements (images, `<style>`, `<script>`) exactly as-is.
-6. Re-zip from temp dir using `zipfile.ZipFile` with `ZIP_DEFLATED`.
+6. Re-zip from temp dir with `zipfile.ZipFile`; `mimetype` is written first and
+   uncompressed as the EPUB specification requires.
 
 ---
 

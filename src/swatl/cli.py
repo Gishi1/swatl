@@ -120,7 +120,11 @@ def inspect(
         raise SystemExit(1) from e
 
     segments, doc_count = extract_segments_from_epub(
-        epub_dir, info.spine_items, info.mime_types, info.language
+        epub_dir,
+        info.spine_items,
+        info.mime_types,
+        info.language,
+        extra_docs=info.nav_items,
     )
 
     # Estimate tokens and costs
@@ -141,7 +145,7 @@ def inspect(
             f"Author:     {info.author or 'Unknown'}\n"
             f"Version:    {info.epub_version}\n"
             f"Language:   {info.language}\n"
-            f"Chapters:   {doc_count}\n"
+            f"Documents:  {doc_count}\n"
             f"Spine:      {len(info.spine_items)} documents\n"
             f"Segments:   {len(segments)}\n"
             f"Tokens:     ~{tokens_in:,} in / ~{tokens_out:,} out\n"
@@ -202,7 +206,11 @@ def translate(
 
     console.print("[bold]Extracting segments...[/bold]")
     segments, doc_count = extract_segments_from_epub(
-        epub_dir, info.spine_items, info.mime_types, info.language
+        epub_dir,
+        info.spine_items,
+        info.mime_types,
+        info.language,
+        extra_docs=info.nav_items,
     )
     console.print(f"  {len(segments)} segments from {doc_count} documents")
 

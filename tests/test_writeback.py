@@ -234,3 +234,89 @@ class TestPackageLanguage:
         self._export(fixture_epub, tmp_path)
         after = zf_mod.ZipFile(fixture_epub).read("content.opf")
         assert before == after
+
+
+class TestNavigationWriteback:
+    """Nav documents and <title> elements must be translated in the export."""
+
+    def _export_epub3(self, tmp_path):
+        import asyncio
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        from fixtures.create_fixture import create_epub3_fixture
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+        from swatl.providers.mock import MockProvider
+        from swatl.translate.translator import Translator
+        from swatl.writeback.writer import writeback_segments
+
+        book = create_epub3_fixture(tmp_path / "book3.epub")
+        info, epub_dir = extract_epub(book)
+        segments, _ = extract_segments_from_epub(
+            epub_dir,
+            info.spine_items,
+            info.mime_types,
+            info.language,
+            extra_docs=info.nav_items,
+        )
+        segments = asyncio.run(Translator(MockProvider(), "zh", "en").translate_all(segments))
+        output_path = tmp_path / "output3.epub"
+        writeback_segments(epub_dir, segments, target_lang="en", output_path=output_path)
+        with zipfile.ZipFile(output_path) as zf:
+            return {name: zf.read(name).decode("utf-8") for name in zf.namelist()}, segments
+
+    def test_nav_document_translated(self, tmp_path):
+        docs, _segments = self._export_epub3(tmp_path)
+        nav = docs["nav.xhtml"]
+        body = nav[nav.index("<body") :]
+        assert not any("\u4e00" <= c <= "\u9fff" for c in body), body
+        assert "char" in body  # mock translation marker
+
+    def test_document_title_translated(self, tmp_path):
+        docs, _segments = self._export_epub3(tmp_path)
+        assert "<title>目录</title>" not in docs["nav.xhtml"]
+        assert "第一章" not in docs["text/ch01.xhtml"]
+
+    def test_spine_document_still_translated(self, tmp_path):
+        docs, segments = self._export_epub3(tmp_path)
+        chapter = docs["text/ch01.xhtml"]
+        for seg in segments:
+            if seg.doc == "text/ch01.xhtml" and seg.translated:
+                assert seg.translated in chapter, seg.id
+
+
+class TestInlineTailWriteback:
+    """Text after an inline element must reach the exported EPUB."""
+
+    def test_tail_is_written_back(self, tmp_path):
+        import asyncio
+
+        from lxml import html as lhtml
+
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+        from swatl.providers.mock import MockProvider
+        from swatl.translate.translator import Translator
+        from swatl.writeback.writer import _write_document
+
+        doc = tmp_path / "d.xhtml"
+        doc.write_text(
+            "<html><head><title>标题</title></head><body>"
+            "<p>点击<em>这里</em>继续阅读。</p>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        tail_segs = [s for s in segments if s.part == "tail"]
+        assert [s.source_text for s in tail_segs] == ["继续阅读。"]
+
+        segments = asyncio.run(Translator(MockProvider(), "zh", "en").translate_all(segments))
+        _write_document(doc, segments, "en")
+
+        result = doc.read_text(encoding="utf-8")
+        assert tail_segs[0].translated in result
+        assert not any("\u4e00" <= c <= "\u9fff" for c in result)
+        # The inline element survives.
+        assert lhtml.fromstring(result.encode("utf-8")).find(".//em") is not None

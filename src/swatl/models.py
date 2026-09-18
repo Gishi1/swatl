@@ -29,11 +29,12 @@ class Segment(BaseModel):
 
     id: str  # e.g. "h1-007", "p-0041"
     doc: str  # relative path in EPUB, e.g. "text/ch01.xhtml"
-    anchor: str  # XPath selector, e.g. ".//p[4]"
+    anchor: str  # XPath selector, e.g. ".//p[4]" (may end with "#tail")
     tag: str  # "p", "h1", "blockquote"
     source_text: str
     translated: str | None = None
     status: SegmentStatus = SegmentStatus.PENDING
+    part: str = "text"  # "text" (element's own text) or "tail" (text after it)
     context: str | None = None  # previous N segments for context
     tokens_in: int | None = None
     tokens_out: int | None = None

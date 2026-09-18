@@ -263,3 +263,72 @@ blockquote {
         zf.writestr("images/cover.png", MINIMAL_PNG)
 
     return path
+
+
+def create_epub3_fixture(path: str | Path) -> Path:
+    """Create a minimal EPUB3 fixture with a navigation document in the manifest.
+
+    The nav document is *not* in the spine (which is the normal EPUB3 layout),
+    so it exercises extra-document segmentation.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    container = """<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>"""
+
+    chapter = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="zh" lang="zh">
+<head><meta charset="UTF-8"/><title>第一章</title></head>
+<body>
+  <h1>第一章：三体世界</h1>
+  <p>这是一个关于宇宙的故事。</p>
+  <p>三体问题困扰了人类数百年。</p>
+</body>
+</html>"""
+
+    nav = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"
+      xml:lang="zh" lang="zh">
+<head><meta charset="UTF-8"/><title>目录</title></head>
+<body>
+  <nav epub:type="toc" id="toc">
+    <h1>目录</h1>
+    <ol>
+      <li><a href="text/ch01.xhtml">第一章：三体世界</a></li>
+    </ol>
+  </nav>
+</body>
+</html>"""
+
+    opf = """<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="BookId" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>三体</dc:title>
+    <dc:creator>刘慈欣</dc:creator>
+    <dc:language>zh</dc:language>
+    <dc:identifier id="BookId">urn:uuid:swatl-fixture3</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="chapter1" href="text/ch01.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="chapter1"/>
+  </spine>
+</package>"""
+
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+        zf.writestr("META-INF/container.xml", container)
+        zf.writestr("content.opf", opf)
+        zf.writestr("nav.xhtml", nav)
+        zf.writestr("text/ch01.xhtml", chapter)
+
+    return path
