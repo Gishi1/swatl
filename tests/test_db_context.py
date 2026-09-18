@@ -331,3 +331,30 @@ class TestOllamaIntegration:
         top = retriever.retrieve("智子锁死了人类的基础物理研究")[0]
         assert top.source_text == "智子"
         assert top.translated_text == "Sophon"
+
+
+class TestProofreaderSkipsMTModels:
+    """A translation-only model must not be marked as having proofread."""
+
+    def test_proofread_all_is_a_no_op_for_plain_providers(self, caplog):
+        from swatl.proofread.proofreader import Proofreader
+        from swatl.providers.openai_compat import OpenAICompatible
+
+        provider = OpenAICompatible("https://mt/v1", "hy-mt2", mode="plain")
+        segments = [
+            Segment(
+                id="p-0001",
+                doc="d",
+                anchor=".//p[1]",
+                tag="p",
+                source_text="中文",
+                translated="Red Coast Base",
+                status=SegmentStatus.TRANSLATED,
+            )
+        ]
+        with caplog.at_level("WARNING"):
+            result = asyncio.run(Proofreader(provider).proofread_all(segments))
+
+        assert result[0].status == SegmentStatus.TRANSLATED  # unchanged, not "proofread"
+        assert result[0].translated == "Red Coast Base"
+        assert any("cannot proofread" in r.message for r in caplog.records)

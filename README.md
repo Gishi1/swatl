@@ -290,7 +290,7 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 433, including 9 browser end-to-end tests |
+| Tests | 439, including 9 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
 | CLI commands | 12 |
@@ -364,7 +364,18 @@ stop = ["<eos:6124c78e>", "<｜hy_User｜>", "<｜hy_Assistant｜>"]
 
 `{target_language}` is replaced with the target language's name. `stop` is
 optional and mainly useful for local runtimes; model control tokens that leak
-into the text are stripped either way.
+into the text are stripped either way. Glossary terms present in a segment are
+appended as a short terminology list, which is what keeps a name consistent
+across a book.
+
+Two things to know about this mode:
+
+- Batching is disabled automatically (one segment per request), so
+  `--concurrency` is what controls throughput.
+- **The proofreading pass is skipped**, because a translation-only model cannot
+  follow the proofreading instruction — in testing it rewrote correct text and
+  dropped glossary-pinned terminology. Run `swatl proofread` with a chat model
+  (`--provider <chat-model>`) instead.
 
 ### Choosing an embedding backend
 

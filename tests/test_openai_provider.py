@@ -559,3 +559,80 @@ class TestPlainMode:
         _patch_transport(monkeypatch, handler)
         result = asyncio.run(self._plain().translate(_segments(3), None, "en", None))
         assert all(s.status == SegmentStatus.FAILED for s in result)
+
+
+class TestPlainModeGlossary:
+    """Terminology must reach instruction-style models too."""
+
+    def _plain(self):
+        return OpenAICompatible(base_url="https://mt.example.com/v1", model="hy-mt2", mode="plain")
+
+    def test_glossary_terms_are_injected(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["prompt"] = json.loads(request.content)["messages"][0]["content"]
+            return _chat_response("Red Coast Base")
+
+        _patch_transport(monkeypatch, handler)
+        glossary = Glossary(
+            entries=[
+                GlossaryEntry(source="红岸基地", target="Red Coast Base"),
+                GlossaryEntry(source="智子", target="Sophon"),
+            ]
+        )
+        seg = Segment(
+            id="p-1", doc="d", anchor=".//p[1]", tag="p", source_text="叶文洁站在红岸基地的窗前。"
+        )
+        asyncio.run(self._plain().translate([seg], glossary, "en", None))
+
+        assert "红岸基地 -> Red Coast Base" in seen["prompt"]
+        # Only terms present in this segment are sent.
+        assert "智子" not in seen["prompt"]
+
+    def test_no_glossary_leaves_the_prompt_clean(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["prompt"] = json.loads(request.content)["messages"][0]["content"]
+            return _chat_response("ok")
+
+        _patch_transport(monkeypatch, handler)
+        asyncio.run(self._plain().translate(_segments(1), None, "en", None))
+        assert "Glossary" not in seen["prompt"]
+
+
+class TestPlainModeProofreading:
+    """An MT model must not be asked to proofread."""
+
+    def test_proofread_is_skipped_for_plain_mode(self, monkeypatch, caplog):
+        calls = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls.append(request)
+            return _chat_response("rewritten")
+
+        _patch_transport(monkeypatch, handler)
+        provider = OpenAICompatible("https://mt/v1", "hy-mt2", mode="plain")
+        seg = _segments(1)[0]
+        seg.translated = "Ye Wenjie stood by the window of Red Coast Base."
+        seg.status = SegmentStatus.TRANSLATED
+
+        with caplog.at_level("WARNING"):
+            result = asyncio.run(provider.proofread([seg], None))
+
+        assert calls == []  # no request was made
+        assert result[0].translated == "Ye Wenjie stood by the window of Red Coast Base."
+        assert result[0].status == SegmentStatus.TRANSLATED
+        assert any("skipping proofreading" in r.message for r in caplog.records)
+
+    def test_json_mode_still_proofreads(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _chat_response(json.dumps({"translated": "Improved."}))
+
+        _patch_transport(monkeypatch, handler)
+        seg = _segments(1)[0]
+        seg.translated = "improved"
+        result = asyncio.run(_provider().proofread([seg], None))
+        assert result[0].translated == "Improved."
+        assert result[0].status == SegmentStatus.PROOFREAD

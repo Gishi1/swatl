@@ -52,12 +52,20 @@ def _get_provider_config(provider_name: str) -> dict[str, Any]:
             "base_url": "https://api.deepseek.com/v1",
             "model": "deepseek-chat",
             "api_key_env": "DEEPSEEK_API_KEY",
+            "mode": "json",
+            "instruction": None,
+            "stop": [],
         }
     cfg = configs[provider_name]
     return {
         "base_url": cfg.base_url,
         "model": cfg.model,
         "api_key_env": cfg.api_key_env,
+        # Prompting mode must survive this hop, otherwise a "plain" provider is
+        # silently driven with the batched JSON prompt.
+        "mode": cfg.mode,
+        "instruction": cfg.instruction,
+        "stop": list(cfg.stop),
     }
 
 
@@ -342,11 +350,19 @@ def translate(
     console.print(f"[bold]Translating with {prov.provider_type} ({cfg.model})...[/bold]")
     console.print(f"  Concurrency: {concurrency}, Target: {target}")
 
+    # Instruction-style ("plain") providers translate one segment per request,
+    # so batching would only serialise them inside a single call. One segment
+    # per batch lets --concurrency drive the parallelism instead.
+    batch_size = 1 if getattr(prov, "mode", "json") == "plain" else 10
+    if batch_size == 1:
+        console.print("[dim]Instruction-style provider: one segment per request.[/dim]")
+
     trans = Translator(
         provider=prov,
         source_lang=info.language,
         target_lang=target,
         concurrency=concurrency,
+        batch_size=batch_size,
         style=style,
     )
 
@@ -396,9 +412,12 @@ def translate(
     )
     store.save_run(run)
 
-    # Show summary. Count statuses from the store so a resumed run reports the
-    # book's real state rather than only what this invocation translated.
-    status_counts = store.status_counts()
+    # Show summary. Count the in-memory segments: failures are deliberately not
+    # persisted (so a resume retries them), and reading the store alone would
+    # therefore report failed work as still pending.
+    status_counts: dict[str, int] = {}
+    for seg in segments:
+        status_counts[seg.status] = status_counts.get(seg.status, 0) + 1
     done = sum(status_counts.get(k, 0) for k in ("translated", "proofread", "edited"))
     console.print("")
     console.print(

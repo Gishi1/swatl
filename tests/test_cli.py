@@ -348,3 +348,53 @@ class TestKeylessProviders:
 
         with_key = OpenAICompatible("https://api.x/v1", "m", api_key="k")._headers()
         assert with_key["Authorization"] == "Bearer k"
+
+
+class TestSummaryReporting:
+    """The summary must report this run's real outcome."""
+
+    def test_failed_segments_are_reported_as_failed(self, tmp_path, monkeypatch):
+        """Failures are not persisted (so a resume retries them), but the
+        summary must still count them as failed rather than pending."""
+        from typer.testing import CliRunner
+
+        from fixtures.create_fixture import create_fixture_epub
+        from swatl.providers import openai_compat
+
+        fixture = tmp_path / "book.epub"
+        create_fixture_epub(fixture)
+
+        class Boom(openai_compat.OpenAICompatible):
+            async def translate(
+                self,
+                segments,
+                glossary=None,
+                target_lang="en",
+                context=None,
+                retrieved_contexts=None,
+                system_prompt=None,
+            ):
+                for seg in segments:
+                    seg.status = "failed"
+                    seg.translated = None
+                return segments
+
+        monkeypatch.setattr(openai_compat, "OpenAICompatible", Boom, raising=True)
+        monkeypatch.setenv("SWATL_SUMMARY_TEST_KEY", "k")
+
+        cfg = tmp_path / "providers.toml"
+        cfg.write_text(
+            '[boom]\nbase_url = "http://localhost:1/v1"\nmodel = "boom"\n'
+            'api_key_env = "SWATL_SUMMARY_TEST_KEY"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = CliRunner().invoke(
+            app,
+            ["translate", str(fixture), "--provider", "boom", "--state", str(tmp_path / "s")],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Failed:" in result.output
+        failed_line = next(line for line in result.output.splitlines() if "Failed:" in line)
+        assert "Failed:     0" not in failed_line, failed_line

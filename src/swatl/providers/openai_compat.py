@@ -107,6 +107,23 @@ _CONTROL_TOKEN_RE = re.compile(
 )
 
 
+def _glossary_block(glossary: Glossary | None, source_text: str) -> str:
+    """Terminology instructions for the terms present in *source_text*.
+
+    MT models follow a short terminology list well, and it is the only way to
+    pin a name that has several defensible translations (红岸基地 could be
+    "Red Coast Base", "Red Bank Base" or "Red Shore Base").
+    """
+    if not glossary or not glossary.entries:
+        return ""
+    relevant = [e for e in glossary.entries if e.source and e.source in source_text]
+    if not relevant:
+        return ""
+    lines = ["Glossary (use these exact translations):"]
+    lines += [f"- {e.source} -> {e.target}" for e in relevant]
+    return "\n".join(lines)
+
+
 def _clean_translation(text: str) -> str:
     """Strip prompt scaffolding a model may have echoed into its answer.
 
@@ -209,6 +226,7 @@ class OpenAICompatible(Provider):
         self.cost_per_token_in: float = 0.0  # provider-specific
         self.cost_per_token_out: float = 0.0
         self._compression_warned = False
+        self._proofread_skip_warned = False
 
     def _warn_if_gateway_compresses(self, response) -> None:
         """Warn once when a gateway says it is rewriting our prompts.
@@ -376,7 +394,7 @@ class OpenAICompatible(Provider):
 
         if self.mode == "plain":
             return await self._translate_plain(
-                segments, target_lang, retrieved_contexts=retrieved_contexts
+                segments, target_lang, glossary=glossary, retrieved_contexts=retrieved_contexts
             )
 
         system = system_prompt or self._build_system_prompt(target_lang, glossary, context)
@@ -432,6 +450,7 @@ class OpenAICompatible(Provider):
         self,
         segments: list[Segment],
         target_lang: str,
+        glossary: Glossary | None = None,
         retrieved_contexts: list[str | None] | None = None,
     ) -> list[Segment]:
         """Translate one segment per request, instruction style.
@@ -454,6 +473,9 @@ class OpenAICompatible(Provider):
                         prompt_text = f"{hint}\n\n{prompt_text}"
 
                 user_prompt = self.instruction.replace("{target_language}", language)
+                terms = _glossary_block(glossary, seg.source_text)
+                if terms:
+                    user_prompt = f"{user_prompt}\n\n{terms}"
                 user_prompt = f"{user_prompt}\n\n{prompt_text}"
 
                 payload: dict[str, Any] = {
@@ -519,7 +541,23 @@ class OpenAICompatible(Provider):
         return _clean_translation(content or "") or None
 
     async def proofread(self, segments: list[Segment], glossary: Glossary | None) -> list[Segment]:
-        """Proofread translated segments, one request per segment."""
+        """Proofread translated segments, one request per segment.
+
+        Instruction-style translation models are skipped: they cannot follow the
+        proofreading instruction, and in practice they rewrite text that was
+        already correct while dropping glossary-pinned terminology. Use a chat
+        model for this pass.
+        """
+        if self.mode == "plain":
+            if not self._proofread_skip_warned:
+                self._proofread_skip_warned = True
+                logger.warning(
+                    "%s is an instruction-style translation model; skipping proofreading. "
+                    "Run `swatl proofread --provider <chat-model>` instead.",
+                    self.model,
+                )
+            return segments
+
         results: list[Segment] = []
         system = system_prompt_proofread()
 

@@ -30,6 +30,15 @@ class Proofreader:
         glossary: Glossary | None = None,
     ) -> list[Segment]:
         """Proofread all translated-but-unproofread segments."""
+        if getattr(self.provider, "mode", "json") == "plain":
+            logger.warning(
+                "%s is an instruction-style translation model and cannot proofread; "
+                "no segments were changed. Use a chat model, e.g. "
+                "`swatl proofread --provider <chat-model>`.",
+                getattr(self.provider, "model", "provider"),
+            )
+            return segments
+
         to_proofread = [
             s for s in segments if s.status in ("translated", "edited") and s.translated
         ]
