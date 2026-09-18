@@ -217,7 +217,7 @@ On NixOS (externally managed Python), use the `nix-shell` recipe in
 |---|---|
 | Source files | 39 Python files, ~6.5k lines (13 modules) |
 | Test files | 27 (incl. browser e2e) |
-| Tests | 320 (all passing) |
+| Tests | 332 (all passing) |
 | Lint | `ruff check` — 0 errors |
 | Format | `ruff format --check` — clean |
 | Language pairs | zh↔en, ja↔en (extensible) |

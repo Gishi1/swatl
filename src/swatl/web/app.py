@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 from pathlib import Path
 from typing import Annotated
 
@@ -32,6 +33,22 @@ def _read_store(state_dir: str) -> SegmentStore:
 def _read_context_store(state_dir: str) -> ContextEntryStore:
     """A ContextEntryStore that never creates directories (for GET endpoints)."""
     return ContextEntryStore(_expand(state_dir), create=False)
+
+
+def _parse_json_pairs(content: str) -> list[tuple[str, str]]:
+    """Parse bilingual JSON, reporting malformed input as a 400."""
+    try:
+        return parse_json_bilingual(content)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+
+
+def _parse_csv_pairs(content: str, delimiter: str) -> list[tuple[str, str]]:
+    """Parse bilingual CSV, reporting malformed input as a 400."""
+    try:
+        return parse_csv_bilingual(content, delimiter)
+    except csv.Error as e:
+        raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
 
 
 # ---- Request/Response models ----
@@ -403,9 +420,9 @@ async def context_stats(state_dir: str):
 async def import_text(
     state_dir: str,
     text: str = Form(...),
-    source_name: str = Form("text"),
-    chunk_size: int = Form(500),
-    overlap: int = Form(100),
+    source_name: Annotated[str, Form()] = "text",
+    chunk_size: Annotated[int, Form(ge=10, le=20000)] = 500,
+    overlap: Annotated[int, Form(ge=0, le=20000)] = 100,
 ):
     """Import raw text as chunked context entries."""
     store = ContextEntryStore(_expand(state_dir))
@@ -430,12 +447,12 @@ async def import_text(
 @app.post("/api/context/import/json")
 async def import_json_entries(
     state_dir: str,
-    content: str = Form(...),
-    source_name: str = Form("import.json"),
+    content: Annotated[str, Form()],
+    source_name: Annotated[str, Form()] = "import.json",
 ):
     """Import JSON bilingual pairs as context entries."""
     store = ContextEntryStore(_expand(state_dir))
-    pairs = parse_json_bilingual(content)
+    pairs = _parse_json_pairs(content)
     entries = [
         ContextEntry(
             source_text=src,
@@ -453,13 +470,13 @@ async def import_json_entries(
 @app.post("/api/context/import/batch")
 async def import_csv_entries(
     state_dir: str,
-    content: str = Form(...),
-    source_name: str = Form("import.csv"),
-    delimiter: str = Form(","),
+    content: Annotated[str, Form()],
+    source_name: Annotated[str, Form()] = "import.csv",
+    delimiter: Annotated[str, Form()] = ",",
 ):
     """Import CSV bilingual pairs as context entries."""
     store = ContextEntryStore(_expand(state_dir))
-    pairs = parse_csv_bilingual(content, delimiter)
+    pairs = _parse_csv_pairs(content, delimiter)
     entries = [
         ContextEntry(
             source_text=src,
@@ -517,7 +534,7 @@ async def import_file(
     store = ContextEntryStore(_expand(state_dir))
 
     if fmt == "json":
-        pairs = parse_json_bilingual(text)
+        pairs = _parse_json_pairs(text)
         entries = [
             ContextEntry(
                 source_text=src,
@@ -529,7 +546,7 @@ async def import_file(
             for src, tgt in pairs
         ]
     elif fmt == "csv":
-        pairs = parse_csv_bilingual(text)
+        pairs = _parse_csv_pairs(text, ",")
         entries = [
             ContextEntry(
                 source_text=src,

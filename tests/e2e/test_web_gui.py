@@ -241,3 +241,29 @@ def test_desktop_screenshot_smoke(gui, state_dir):
     )
     assert overflow is False
     gui.expect_no_errors()
+
+
+def test_context_file_upload_import(gui, state_dir, tmp_path):
+    """The upload path uses the /api/context/import/file endpoint."""
+    import json as jsonlib
+
+    upload = tmp_path / "pairs.json"
+    upload.write_text(
+        jsonlib.dumps(
+            [{"source": "你好", "target": "Hello"}, {"source": "世界", "target": "World"}]
+        ),
+        encoding="utf-8",
+    )
+
+    gui.open(str(state_dir))
+    gui.page.click("button[data-tab='context']")
+    gui.page.wait_for_timeout(500)
+    gui.page.click("button:has-text('Import')")
+    gui.page.wait_for_timeout(300)
+    gui.page.set_input_files("#importFile", str(upload))
+    gui.page.click("button:has-text('Upload & Import')")
+    gui.page.wait_for_timeout(1200)
+
+    assert "Imported 2 entries" in gui.page.locator("#toast").inner_text()
+    assert gui.page.locator(".context-card").count() >= 2
+    gui.expect_no_errors()

@@ -28,7 +28,17 @@ def chunk_text(
     chunk_size: int = 500,
     overlap: int = 100,
 ) -> list[str]:
-    """Split text into overlapping chunks by character count."""
+    """Split text into overlapping chunks by character count.
+
+    ``chunk_size`` and ``overlap`` are normalised first: an overlap close to the
+    chunk size would barely advance the window and turn a single paste into
+    thousands of near-identical chunks, so overlap is capped at half the chunk
+    size.
+    """
+    chunk_size = max(1, int(chunk_size))
+    overlap = max(0, int(overlap))
+    overlap = min(overlap, chunk_size // 2)
+
     chunks: list[str] = []
     start = 0
     text = text.strip()
@@ -49,8 +59,8 @@ def chunk_text(
                     end = start + newline + 1
                     chunk = text[start:end]
         chunks.append(chunk.strip())
-        # Advance: next start is after current end minus overlap
-        # But ensure we don't go backwards or stay in place
+        # Advance: next start is after current end minus overlap, always
+        # moving forward by at least one character.
         next_start = end - overlap if end < len(text) else len(text)
         if next_start <= start:
             next_start = start + 1
@@ -111,6 +121,26 @@ class ContextImporter:
     ) -> None:
         self.chunk_size = chunk_size
         self.overlap = overlap
+
+    # These mirror the module-level helpers so callers holding a ContextImporter
+    # (the web import endpoint, for instance) do not have to import both.
+    def chunk_text(
+        self,
+        text: str,
+        chunk_size: int | None = None,
+        overlap: int | None = None,
+    ) -> list[str]:
+        """Chunk *text* using the importer's defaults unless overridden."""
+        return chunk_text(
+            text,
+            chunk_size if chunk_size is not None else self.chunk_size,
+            overlap if overlap is not None else self.overlap,
+        )
+
+    @staticmethod
+    def extract_text_from_html(content: str) -> str:
+        """Extract readable text from an HTML/XHTML document."""
+        return extract_text_from_html(content)
 
     def import_text(
         self,

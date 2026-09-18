@@ -392,6 +392,14 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     <input type="text" id="importJsonSource" placeholder="Source name" value="import.json" style="width:100%;margin-top:6px;background:var(--bg);border:1px solid var(--border);color:var(--fg);padding:6px 10px;border-radius:var(--radius);font-size:12px">
     <button class="btn btn-sm btn-green" style="margin-top:8px" onclick="doImportJSON()">Import JSON</button>
   </div>
+  <div class="import-section">
+    <h4>Import a File</h4>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">
+      JSON, CSV, HTML/XHTML or plain text. Chunk size and overlap above are used for text.
+    </div>
+    <input type="file" id="importFile" accept=".json,.csv,.txt,.html,.htm,.xhtml">
+    <button class="btn btn-sm btn-green" style="margin-top:8px" onclick="doImportFile()">Upload &amp; Import</button>
+  </div>
   <div class="actions">
     <button class="btn btn-sm btn-outline" onclick="hideImportModal()">Close</button>
   </div>
@@ -470,13 +478,22 @@ async function api(method, pathOrUrl, opts) {
     }
   }
   const r = await fetch(url, fetchOpts);
-  if (!r.ok) {
-    let msg = r.statusText || ('HTTP ' + r.status);
-    try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch(e) { /* not JSON */ }
-    throw new Error(msg);
-  }
+  if (!r.ok) throw new Error(await errorText(r));
   if (r.status === 204) return null;
   return r.json();
+}
+
+// FastAPI reports errors as {"detail": ...}; a validation error's detail is a
+// list, so stringify anything that is not already a string.
+async function errorText(r) {
+  let msg = r.statusText || ('HTTP ' + r.status);
+  try {
+    const j = await r.json();
+    if (j && j.detail) {
+      msg = typeof j.detail === 'string' ? j.detail : JSON.stringify(j.detail);
+    }
+  } catch(e) { /* response had no JSON body */ }
+  return msg;
 }
 
 function toast(msg, isError) {
@@ -794,7 +811,7 @@ async function doImportText() {
     const r = await fetch(API + '/context/import/text?state_dir=' + encodeURIComponent(sd), {
       method: 'POST', body: formData,
     });
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) throw new Error(await errorText(r));
     const data = await r.json();
     toast(`Imported ${data.entries_created} chunks`);
     hideImportModal();
@@ -813,11 +830,34 @@ async function doImportJSON() {
     const r = await fetch(API + '/context/import/json?state_dir=' + encodeURIComponent(sd), {
       method: 'POST', body: formData,
     });
-    if (!r.ok) throw new Error(await r.text());
+    if (!r.ok) throw new Error(await errorText(r));
     const data = await r.json();
     toast(`Imported ${data.entries_created} entries`);
     hideImportModal();
     loadContextEntries();
+    refreshStats();
+  } catch(e) { toast('Import failed: ' + e.message, true); }
+}
+
+async function doImportFile() {
+  const input = document.getElementById('importFile');
+  if (!input.files || !input.files.length) { toast('Choose a file first', true); return; }
+  const sd = getStateDir();
+  const formData = new FormData();
+  formData.append('file', input.files[0]);
+  formData.append('chunk_size', document.getElementById('importChunkSize').value || '500');
+  formData.append('overlap', document.getElementById('importOverlap').value || '100');
+  try {
+    const r = await fetch(API + '/context/import/file?state_dir=' + encodeURIComponent(sd), {
+      method: 'POST', body: formData,
+    });
+    if (!r.ok) throw new Error(await errorText(r));
+    const data = await r.json();
+    toast(`Imported ${data.entries_created} entries (${data.format})`);
+    input.value = '';
+    hideImportModal();
+    loadContextEntries();
+    refreshStats();
   } catch(e) { toast('Import failed: ' + e.message, true); }
 }
 

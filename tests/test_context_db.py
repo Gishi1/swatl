@@ -313,3 +313,16 @@ def test_load_all_repairs_null_entry_type(tmp_path):
     entries = store.load_all()
     assert entries["bad"].entry_type == "manual"
     assert set(entries) == {"bad", "ok"}
+
+
+def test_chunk_text_clamps_overlap():
+    """Regression: overlap >= chunk_size did not advance the window."""
+    from swatl.context_db.importer import chunk_text
+
+    text = "字" * 2000
+    assert len(chunk_text(text, 500, 100)) == 5
+    # Overlap is capped at half the chunk size, so the window always advances.
+    assert len(chunk_text(text, 500, 500)) <= 10
+    assert len(chunk_text(text, 500, 600)) <= 10
+    assert chunk_text("", 500, 100) == []
+    assert len(chunk_text(text, 50, 999)) <= 80

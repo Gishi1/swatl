@@ -484,3 +484,65 @@ class TestReadOnlyEndpoints:
         (tmp_path / "segments.jsonl").write_text("", encoding="utf-8")
         resp = client.get("/api/segments", params={"state_dir": str(tmp_path)})
         assert resp.json()["state_dir_exists"] is True
+
+
+class TestImportValidation:
+    """Import endpoints must reject bad input cleanly and stay bounded."""
+
+    def test_malformed_json_import_is_a_client_error(self, tmp_path):
+        client = TestClient(app)
+        resp = client.post(
+            "/api/context/import/json",
+            params={"state_dir": str(tmp_path)},
+            data={"content": "{not json", "source_name": "bad.json"},
+        )
+        assert resp.status_code == 400
+        assert "Invalid JSON" in resp.json()["detail"]
+
+    def test_overlap_larger_than_chunk_size_is_clamped(self, tmp_path):
+        """A huge overlap used to explode one paste into thousands of chunks."""
+        client = TestClient(app)
+        resp = client.post(
+            "/api/context/import/text",
+            params={"state_dir": str(tmp_path)},
+            data={
+                "text": "字" * 2000,
+                "source_name": "t",
+                "chunk_size": "500",
+                "overlap": "600",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["chunks_total"] <= 10
+
+    def test_zero_chunk_size_is_rejected(self, tmp_path):
+        client = TestClient(app)
+        resp = client.post(
+            "/api/context/import/text",
+            params={"state_dir": str(tmp_path)},
+            data={"text": "hello", "chunk_size": "0", "overlap": "0"},
+        )
+        assert resp.status_code == 422
+
+    def test_file_upload_json_import(self, tmp_path):
+        client = TestClient(app)
+        payload = json.dumps([{"source": "你好", "target": "Hello"}]).encode("utf-8")
+        resp = client.post(
+            "/api/context/import/file",
+            params={"state_dir": str(tmp_path)},
+            files={"file": ("pairs.json", payload, "application/json")},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["entries_created"] == 1
+
+    def test_file_upload_html_import(self, tmp_path):
+        client = TestClient(app)
+        html = "<html><body><p>第一段</p><p>第二段</p></body></html>".encode()
+        resp = client.post(
+            "/api/context/import/file",
+            params={"state_dir": str(tmp_path)},
+            files={"file": ("page.html", html, "text/html")},
+            data={"chunk_size": "50", "overlap": "10"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["entries_created"] >= 1
