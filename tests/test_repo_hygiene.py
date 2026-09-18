@@ -84,3 +84,36 @@ def test_package_modules_are_importable():
         "swatl.writeback",
     ):
         assert importlib.import_module(module) is not None
+
+
+# APIs that exist only in Python 3.12+ while this package supports 3.11.
+_PY312_ONLY = {
+    # Path.walk() takes no arguments; os.walk(path) must not match.
+    r"\.walk\(\s*\)": "pathlib.Path.walk is Python 3.12+ (use os.walk)",
+    r"\bitertools\.batched\(": "itertools.batched is Python 3.12+",
+    r"\btyping\.override\b": "typing.override is Python 3.12+",
+    r"^\s*from typing import .*\boverride\b": "typing.override is Python 3.12+",
+    r"@override\b": "typing.override is Python 3.12+",
+}
+
+
+@pytest.mark.parametrize("pattern,reason", sorted(_PY312_ONLY.items()))
+def test_no_python_312_only_apis(pattern, reason):
+    """`requires-python = ">=3.11"` must mean 3.11 actually works.
+
+    Regression: `Path.walk()` silently broke every export on 3.11, which the
+    3.12 development interpreter could never reveal.
+    """
+    import re
+
+    compiled = re.compile(pattern)
+    offenders = []
+    for path in sorted((REPO_ROOT / "src").rglob("*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if line.lstrip().startswith("#"):
+                continue
+            if compiled.search(line):
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{lineno}")
+    assert offenders == [], f"{reason}: {offenders}"

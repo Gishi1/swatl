@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import zipfile
 from pathlib import Path
 
@@ -374,7 +375,9 @@ def _create_output_epub(source_dir: Path, output_path: Path) -> None:
                 compress_type=zipfile.ZIP_STORED,
             )
 
-        for root, _dirs, files in source_dir.walk():
+        # os.walk, not Path.walk: the latter is Python 3.12+ and this package
+        # supports 3.11.
+        for root, _dirs, files in os.walk(source_dir):
             for filename in sorted(files):
                 file_path = Path(root) / filename
                 arcname = str(file_path.relative_to(source_dir))
