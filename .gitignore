@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+.venv/
+venv/
+env/
+
+# Python build
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Lint / test cache
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# EPUB files (user data — not part of the repo)
+*.epub
+
+# State / temp files
+.swatl-state/
+state/
+state2/
+tmp/
+tmp_path/
+*-state/
+bilingual/
+
+# uv's local package cache (when UV_CACHE_DIR points into the repo)
+.uv-cache/
+
+# Local scratch / end-to-end test workspaces
+.e2e/
+e2e-state/
+
+# Logs and local environment
+*.log
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config overrides (user-specific)
+config/providers.toml

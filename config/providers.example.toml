@@ -1,0 +1,49 @@
+# swatl provider configuration — EXAMPLE
+#
+# Copy this file to a location swatl reads, then fill in what you need:
+#
+#   mkdir -p ~/.config/swatl
+#   cp config/providers.example.toml ~/.config/swatl/providers.toml
+#
+# Lookup order (first existing file wins):
+#   1. ~/.config/swatl/providers.toml
+#   2. ./config/providers.toml
+#   3. ./providers.toml
+#
+# API keys are never stored here — only the name of the environment variable
+# that holds them. Export the variable before running swatl:
+#
+#   export DEEPSEEK_API_KEY=sk-...
+#
+# For local providers (Ollama, LM Studio), set base_url to the local endpoint
+# and leave api_key_env empty.
+
+[deepseek]
+type = "openai-compatible"
+base_url = "https://api.deepseek.com"
+model = "deepseek-chat"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[openai]
+type = "openai-compatible"
+base_url = "https://api.openai.com"
+model = "gpt-4o"
+api_key_env = "OPENAI_API_KEY"
+
+[anthropic]
+type = "openai-compatible"
+base_url = "https://api.anthropic.com"
+model = "claude-sonnet-4-20250514"
+api_key_env = "ANTHROPIC_API_KEY"
+
+[ollama]
+type = "openai-compatible"
+base_url = "http://localhost:11434/v1"
+model = "qwen2.5:32b"
+api_key_env = ""
+
+[dashscope]
+type = "openai-compatible"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+model = "qwen3-mt"
+api_key_env = "DASHSCOPE_API_KEY"

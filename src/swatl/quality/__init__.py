@@ -1,0 +1,1 @@
+"""Quality verification module."""

@@ -1,0 +1,80 @@
+[project]
+name = "swatl"
+version = "0.1.0"
+description = "AI translation and proofreading studio for EPUB books"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["epub", "translation", "llm", "ebook", "proofreading", "chinese"]
+authors = [
+    { name = "swatl" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Linguistic",
+    "Topic :: Utilities",
+]
+dependencies = [
+    # Translation core
+    "typer>=0.15",
+    "rich>=14",
+    "openai>=1.61",
+    "httpx>=0.28",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "lxml>=5.3",
+    "tomlkit>=0.13",
+    "tiktoken>=0.8",
+    # Phase 4 — web GUI
+    "fastapi>=0.115",
+    "uvicorn>=0.34",
+    "python-multipart>=0.0.32",
+    "numpy>=2.4.6",
+    "faiss-cpu>=1.15.1",
+    "sentence-transformers>=6.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+]
+
+[project.scripts]
+swatl = "swatl.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/swatl"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B"]
+ignore = ["E501", "N806"]  # handled by formatter; constants in fixtures are uppercase
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.8",
+]
