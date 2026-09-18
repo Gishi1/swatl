@@ -546,3 +546,28 @@ class TestImportValidation:
         )
         assert resp.status_code == 200
         assert resp.json()["entries_created"] >= 1
+
+
+class TestProviderConfigEndpoint:
+    def test_add_provider_reports_config_path(self, tmp_path, monkeypatch):
+        """Saving a provider must report where the config was written."""
+        from swatl import config as config_module
+
+        target = tmp_path / "providers.toml"
+        monkeypatch.setattr(config_module, "_find_default_config", lambda: target)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/api/config",
+            json={
+                "name": "myprovider",
+                "base_url": "https://api.example.com/v1",
+                "model": "my-model",
+                "api_key_env": "MY_KEY",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["config_path"] == str(target)
+        assert target.exists()

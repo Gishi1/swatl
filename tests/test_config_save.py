@@ -43,3 +43,16 @@ class TestSaveProvider:
         assert data["existing"].model == "existing-model"
         assert "newprovider" in data
         assert data["newprovider"].model == "new-model"
+
+    def test_save_provider_returns_path(self, tmp_path):
+        """The written path is returned so callers can report it."""
+        config_file = tmp_path / "nested" / "providers.toml"
+        provider = ProviderConfig(
+            type="openai-compatible",
+            base_url="https://api.example.com/v1",
+            model="m",
+            api_key_env="KEY",
+        )
+        written = save_provider("p", provider, config_file)
+        assert written == config_file
+        assert config_file.exists()

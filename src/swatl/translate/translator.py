@@ -51,6 +51,10 @@ class Translator:
         glossary: Glossary | None = None,
     ) -> list[Segment]:
         """Translate all pending segments with batching and retry."""
+        # Recorded up front so every early-return path (nothing pending, all
+        # cache hits) still carries glossary provenance.
+        self.record_glossary_hits(segments, glossary)
+
         pending = [s for s in segments if s.status == "pending"]
         if not pending:
             logger.info("No pending segments to translate.")
@@ -172,10 +176,12 @@ class Translator:
             if fail:
                 failed.extend([s for s in batch_results if s.status == "failed"])
 
-        # Update original list in-place
+        # Update original list in-place. Index by id once: a nested scan per
+        # result made this O(n²) and dominated run time on large books.
+        by_id = {seg.id: seg for seg in segments}
         for seg in results:
-            original = next((s for s in segments if s.id == seg.id), None)
-            if original:
+            original = by_id.get(seg.id)
+            if original is not None:
                 original.translated = seg.translated
                 original.status = seg.status
                 original.provider = seg.provider
@@ -197,6 +203,23 @@ class Translator:
             logger.info("Added %d new entries to translation memory", added)
 
         return segments
+
+    @staticmethod
+    def record_glossary_hits(segments: list[Segment], glossary: Glossary | None) -> None:
+        """Record which glossary source terms occur in each segment.
+
+        Powers the "Glossary hits" panel in the web UI and makes glossary
+        compliance auditable after the fact.
+        """
+        if not glossary or not glossary.entries:
+            return
+        terms = [e.source for e in glossary.entries if e.source]
+        if not terms:
+            return
+        for seg in segments:
+            if not seg.source_text:
+                continue
+            seg.glossary_hits = [term for term in terms if term in seg.source_text]
 
     def estimate_tokens(self, segments: list[Segment]) -> tuple[int, int]:
         """Rough token estimate: ~1 token per CJK char, ~4 chars per English token."""

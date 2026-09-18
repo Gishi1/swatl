@@ -73,10 +73,11 @@ def _find_default_config() -> Path:
 
 def save_provider(
     name: str, provider: ProviderConfig, config_path: str | Path | None = None
-) -> None:
+) -> Path:
     """Persist a provider config to a TOML file.
 
-    If *config_path* is None, uses the default config location.
+    If *config_path* is None, uses the default config location. Returns the
+    path that was written, so callers can tell the user where it landed.
     """
     path = Path(config_path) if config_path else _find_default_config()
     if not path.exists():
@@ -94,3 +95,5 @@ def save_provider(
 
     with open(path, "w", encoding="utf-8") as f:
         tomlkit.dump(data, f)
+
+    return path

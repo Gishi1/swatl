@@ -291,17 +291,21 @@ def translate(
     )
     store.save_run(run)
 
-    # Show summary
+    # Show summary. Count statuses from the store so a resumed run reports the
+    # book's real state rather than only what this invocation translated.
     status_counts = store.status_counts()
+    done = sum(status_counts.get(k, 0) for k in ("translated", "proofread", "edited"))
     console.print("")
     console.print(
         Panel(
-            f"Total:     {len(segments)} segments\n"
-            f"Translated: {status_counts.get('translated', 0)}\n"
+            f"Total:      {len(segments)} segments\n"
+            f"Translated: {done} ({status_counts.get('proofread', 0)} proofread)\n"
+            f"Pending:    {status_counts.get('pending', 0)}\n"
             f"Failed:     {status_counts.get('failed', 0)}\n"
             f"Tokens in:  ~{tokens_in:,}\n"
             f"Tokens out: ~{tokens_out:,}\n"
-            f"Est. cost:  ~${cost_deepseek:.2f} (DeepSeek)\n"
+            f"Est. cost:  ~${cost_deepseek:.2f} (at DeepSeek prices)\n"
+            f"Model:      {cfg.model}\n"
             f"State dir:  {state_dir}",
             title="Translation Summary",
         )

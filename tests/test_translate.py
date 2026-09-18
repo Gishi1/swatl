@@ -104,3 +104,46 @@ class TestEstimateTokens:
         assert t_out > 0
         # zh input should be more tokens than ASCII (CJK ≈ 1 token/char)
         assert t_in >= t_out
+
+
+def test_translate_all_updates_originals_by_id():
+    """Every returned segment must be reflected back on the original object.
+
+    The in-place update used to scan the whole list per result (O(n²)).
+    """
+    import asyncio
+
+    from swatl.models import Segment
+    from swatl.providers.mock import MockProvider
+    from swatl.translate.translator import Translator
+
+    segments = [
+        Segment(id=f"p-{i:04d}", doc="d", anchor=f".//p[{i}]", tag="p", source_text=f"第{i}段中文")
+        for i in range(1, 41)
+    ]
+    result = asyncio.run(Translator(MockProvider(), "zh", "en").translate_all(segments))
+
+    assert len(result) == 40
+    for original, updated in zip(segments, result, strict=True):
+        assert original is updated
+        assert original.translated
+        assert original.status == "translated"
+
+
+def test_glossary_hits_are_recorded():
+    """Glossary terms found in a segment are recorded on the segment."""
+    import asyncio
+
+    from swatl.models import Glossary, GlossaryEntry, Segment
+    from swatl.providers.mock import MockProvider
+    from swatl.translate.translator import Translator
+
+    segments = [
+        Segment(id="p-0001", doc="d", anchor=".//p[1]", tag="p", source_text="三体世界的故事")
+    ]
+    glossary = Glossary(entries=[GlossaryEntry(source="三体", target="Three-Body")])
+    result = asyncio.run(Translator(MockProvider(), "zh", "en").translate_all(segments, glossary))
+
+    seg = result[0]
+    assert "Three-Body" in (seg.translated or "")
+    assert seg.glossary_hits == ["三体"]

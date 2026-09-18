@@ -65,32 +65,22 @@ class TranslationMemory:
         logger.debug("TM miss for segment %s (hash=%s)", segment.id, h)
         return None
 
-    def add(self, segment: Segment) -> None:
-        """Add a translated segment to the memory."""
+    def add(self, segment: Segment) -> bool:
+        """Add a translated segment. Returns True when a new entry was stored."""
         if not segment.translated:
-            return
+            return False
         h = self._hash(segment.source_text)
-        if h not in self._mem_cache:
-            self._mem_cache[h] = segment.translated
-            if len(self._mem_cache) > self.max_entries:
-                # Evict oldest (FIFO by insertion order)
-                self._mem_cache.pop(next(iter(self._mem_cache)))
+        if h in self._mem_cache:
+            return False
+        self._mem_cache[h] = segment.translated
+        # Evict oldest (FIFO by insertion order) until within capacity.
+        while len(self._mem_cache) > self.max_entries:
+            self._mem_cache.pop(next(iter(self._mem_cache)))
+        return True
 
     def add_many(self, segments: list[Segment]) -> int:
-        """Add multiple translated segments. Returns count of added entries."""
-        count = 0
-        for seg in segments:
-            if seg.translated and seg.source_text:
-                h = self._hash(seg.source_text)
-                if h not in self._mem_cache:
-                    self._mem_cache[h] = seg.translated
-                    count += 1
-                elif len(self._mem_cache) > self.max_entries:
-                    # Evict oldest (FIFO by insertion order)
-                    self._mem_cache.pop(next(iter(self._mem_cache)))
-                    self._mem_cache[h] = seg.translated
-                    count += 1
-        return count
+        """Add multiple translated segments. Returns count of new entries."""
+        return sum(1 for seg in segments if self.add(seg))
 
     def count(self) -> int:
         """Return number of entries in the memory."""

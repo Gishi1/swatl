@@ -256,3 +256,40 @@ class TestTranslationMemoryIntegration:
             tm.lookup(Segment(id="s4", doc="x", anchor=".//p[1]", tag="p", source_text="你好4"))
             == "Hello4"
         )
+
+
+def test_add_many_counts_and_bounds_entries(tmp_path):
+    """add_many must report new entries and stay within max_entries."""
+    from swatl.models import Segment, SegmentStatus
+    from swatl.translate.translation_memory import TranslationMemory
+
+    tm = TranslationMemory(memory_file=tmp_path / "tm.json", max_entries=3)
+
+    def seg(i, translation=None):
+        return Segment(
+            id=f"s{i}",
+            doc="x",
+            anchor=".//p[1]",
+            tag="p",
+            source_text=f"源{i}",
+            translated=translation,
+            status=SegmentStatus.TRANSLATED,
+        )
+
+    assert tm.add_many([seg(1, "one"), seg(2, "two")]) == 2
+    # Re-adding existing sources is not counted.
+    assert tm.add_many([seg(1, "one")]) == 0
+    # Untranslated segments are ignored.
+    assert tm.add_many([seg(9)]) == 0
+
+    # Adding beyond capacity evicts oldest entries but keeps the newest.
+    tm.add_many([seg(3, "three"), seg(4, "four")])
+    assert tm.count() == 3
+    assert tm.lookup(seg(4)) == "four"
+    assert tm.lookup(seg(1)) is None
+
+    # The bounded cache round-trips through disk.
+    tm.save_disk_cache()
+    reloaded = TranslationMemory(memory_file=tmp_path / "tm.json", max_entries=3)
+    assert reloaded.count() == 3
+    assert reloaded.lookup(seg(4)) == "four"

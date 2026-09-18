@@ -957,8 +957,8 @@ async function saveProvider() {
   };
   if (!cfg.name || !cfg.model) { toast('Name and Model are required', true); return; }
   try {
-    await api('POST', '/config', cfg);
-    toast('Provider saved');
+    const data = await api('POST', '/config', cfg);
+    toast('Provider saved to ' + (data.config_path || 'config'));
     hideConfigModal();
     loadProviders();
   } catch(e) { toast(e.message, true); }

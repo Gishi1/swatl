@@ -266,8 +266,8 @@ async def add_provider(cfg: ProviderConfigReq):
         model=cfg.model,
         api_key_env=cfg.api_key_env,
     )
-    save_provider(cfg.name, provider)
-    return {"ok": True, "name": cfg.name}
+    path = save_provider(cfg.name, provider)
+    return {"ok": True, "name": cfg.name, "config_path": str(path)}
 
 
 # ============================================================
