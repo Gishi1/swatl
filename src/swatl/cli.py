@@ -50,7 +50,7 @@ def _get_provider_config(provider_name: str) -> dict[str, Any]:
         console.print("  Use `--config` to specify a config file, or set env vars.")
         # Fall back to defaults
         return {
-            "base_url": "https://api.deepseek.com",
+            "base_url": "https://api.deepseek.com/v1",
             "model": "deepseek-chat",
             "api_key_env": "DEEPSEEK_API_KEY",
         }

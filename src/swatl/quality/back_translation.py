@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from dataclasses import dataclass
@@ -77,9 +78,12 @@ async def back_translate_segment(
     model: str = "deepseek-chat",
 ) -> BackTranslationResult:
     """Back-translate a single segment using an LLM API."""
+    # Same endpoint convention as the translation provider: base_url already
+    # includes any version prefix (e.g. ".../v1").
+    base_url = api_base_url.rstrip("/")
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(
-            f"{api_base_url}/v1/chat/completions",
+            f"{base_url}/chat/completions",
             headers={
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
@@ -143,8 +147,6 @@ async def back_translate_sample(
     rng = random.Random(seed)
     sample = rng.sample(translated, min(sample_size, len(translated)))
 
-    results = []
-
     async def _process(seg: Segment) -> BackTranslationResult | None:
         try:
             return await back_translate_segment(seg, api_base_url, api_key, model)
@@ -152,12 +154,10 @@ async def back_translate_sample(
             logger.warning("Back-translation failed for segment %s: %s", seg.id, e)
             return None
 
-    tasks = [back_translate_segment(s, api_base_url, api_key, model) for s in sample]
-    raw_results = await _run_parallel(tasks)
+    # A single failing request must not abort the whole report.
+    raw_results = await _run_parallel([_process(s) for s in sample])
 
-    for r in raw_results:
-        if r is not None:
-            results.append(r)
+    results = [r for r in raw_results if isinstance(r, BackTranslationResult)]
 
     ok = sum(1 for r in results if r.flag == "ok")
     warnings = sum(1 for r in results if r.flag == "warning")
@@ -190,13 +190,13 @@ async def _run_parallel(tasks: list) -> list:
     if not tasks:
         return []
 
-    semaphore = __import__("asyncio").Semaphore(3)
+    semaphore = asyncio.Semaphore(3)
 
     async def _with_sem(task):
         async with semaphore:
             return await task
 
-    return await __import__("asyncio").gather(*[_with_sem(t) for t in tasks])
+    return await asyncio.gather(*[_with_sem(t) for t in tasks], return_exceptions=True)
 
 
 def save_report(report: BackTranslationReport, output_path: str | Path) -> None:
