@@ -84,6 +84,7 @@ async def back_translate_segment(
     api_base_url: str,
     api_key: str,
     model: str = "deepseek-chat",
+    timeout: float = 60.0,
 ) -> BackTranslationResult:
     """Back-translate a single segment using an LLM API."""
     # Same endpoint convention as the translation provider: base_url already
@@ -91,7 +92,7 @@ async def back_translate_segment(
     from swatl.providers.openai_compat import parse_chat_completion
 
     base_url = api_base_url.rstrip("/")
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             f"{base_url}/chat/completions",
             headers=_auth_headers(api_key),
@@ -143,6 +144,7 @@ async def back_translate_sample(
     model: str = "deepseek-chat",
     sample_size: int = 20,
     seed: int | None = None,
+    timeout: float = 60.0,
 ) -> BackTranslationReport:
     """Back-translate a random sample of translated segments."""
     translated = [
@@ -158,7 +160,7 @@ async def back_translate_sample(
 
     async def _process(seg: Segment) -> BackTranslationResult | None:
         try:
-            return await back_translate_segment(seg, api_base_url, api_key, model)
+            return await back_translate_segment(seg, api_base_url, api_key, model, timeout=timeout)
         except Exception as e:
             logger.warning("Back-translation failed for segment %s: %s", seg.id, e)
             return None

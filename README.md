@@ -235,6 +235,26 @@ model = "auto/cheap"
 api_key_env = ""
 ```
 
+### Models that load on demand
+
+`llama-server --sleep-idle-seconds N` unloads a model after `N` seconds without
+a request, so GPU memory is not held by a model nothing is using, and reloads it
+on the next request. Only real inference counts as activity: `/health`, `/props`
+and `/v1/models` are answered while the model is asleep.
+
+The first request after a pause therefore waits for the weights to be read back
+in — tens of seconds for a 30B model. Set `timeout` above that, since the
+default (60 s) can be too tight:
+
+```toml
+[local-mt]
+type = "openai-compatible"
+base_url = "http://127.0.0.1:8080/v1"
+model = "local-mt"
+api_key_env = ""
+timeout = 300
+```
+
 ## Supported providers
 
 | Provider | Type | Notes |

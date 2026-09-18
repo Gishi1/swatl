@@ -110,4 +110,8 @@ class ProviderConfig(BaseModel):
     instruction: str | None = None
     # Sequences that end a generation (many local MT models emit control tokens).
     stop: list[str] = Field(default_factory=list)
+    # Per-request HTTP timeout in seconds. Raise it for local models that load
+    # on demand (llama.cpp ``--sleep-idle-seconds``): the first request after
+    # idling also waits for the model to be read back into memory.
+    timeout: float = 60.0
     extra: dict[str, Any] = Field(default_factory=dict)

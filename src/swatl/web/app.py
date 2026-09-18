@@ -80,6 +80,7 @@ class ProviderConfigReq(BaseModel):
     base_url: str
     model: str
     api_key_env: str
+    timeout: float = 60.0
 
 
 class SegmentUpdateReq(BaseModel):
@@ -295,6 +296,7 @@ async def add_provider(cfg: ProviderConfigReq):
         base_url=cfg.base_url,
         model=cfg.model,
         api_key_env=cfg.api_key_env,
+        timeout=cfg.timeout,
     )
     path = save_provider(cfg.name, provider)
     return {"ok": True, "name": cfg.name, "config_path": str(path)}

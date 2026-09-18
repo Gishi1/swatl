@@ -17,6 +17,12 @@
 #
 # For local providers (Ollama, LM Studio), set base_url to the local endpoint
 # and leave api_key_env empty.
+#
+# timeout (seconds, default 60) bounds a single HTTP request. Raise it for
+# local models that are loaded on demand: when llama-server runs with
+# --sleep-idle-seconds it unloads the weights after a period of idleness, and
+# the first request after that waits for the model to be read back in (tens of
+# seconds for a 30B+ model).
 
 [deepseek]
 type = "openai-compatible"
@@ -83,6 +89,9 @@ base_url = "http://127.0.0.1:11434"
 # model = "hy-mt2"
 # mode = "plain"
 # api_key_env = ""
+# # Reloading a 30B model from disk on the first request takes tens of seconds,
+# # so allow well over the 60 s default.
+# timeout = 300
 # # The instruction from the model card; {target_language} is substituted.
 # instruction = "将以下文本翻译成{target_language},注意只需要输出翻译后的结果,不要额外解释:"
 # stop = ["<eos:6124c78e>", "<｜hy_User｜>", "<｜hy_Assistant｜>"]

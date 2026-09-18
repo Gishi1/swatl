@@ -48,6 +48,7 @@ def load_providers(
             mode=str(cfg.get("mode", "json")),
             instruction=cfg.get("instruction"),
             stop=[str(s) for s in cfg.get("stop", [])],
+            timeout=float(cfg.get("timeout", 60.0)),
             extra={
                 k: v
                 for k, v in cfg.items()
@@ -60,6 +61,7 @@ def load_providers(
                     "mode",
                     "instruction",
                     "stop",
+                    "timeout",
                 )
             },
         )
@@ -156,6 +158,8 @@ def save_provider(
         data[name]["instruction"] = provider.instruction
     if provider.stop:
         data[name]["stop"] = provider.stop
+    if provider.timeout != 60.0:
+        data[name]["timeout"] = provider.timeout
 
     with open(path, "w", encoding="utf-8") as f:
         tomlkit.dump(data, f)

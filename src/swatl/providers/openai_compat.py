@@ -213,6 +213,7 @@ class OpenAICompatible(Provider):
         mode: str = "json",
         instruction: str | None = None,
         stop: list[str] | None = None,
+        timeout: float = 60.0,
     ) -> None:
         if mode not in ("json", "plain"):
             raise ValueError(f"Unknown provider mode {mode!r}: use 'json' or 'plain'")
@@ -223,6 +224,7 @@ class OpenAICompatible(Provider):
         self.mode = mode
         self.instruction = instruction or DEFAULT_PLAIN_INSTRUCTION
         self.stop = list(stop or [])
+        self.timeout = timeout
         self.cost_per_token_in: float = 0.0  # provider-specific
         self.cost_per_token_out: float = 0.0
         self._compression_warned = False
@@ -400,7 +402,7 @@ class OpenAICompatible(Provider):
         system = system_prompt or self._build_system_prompt(target_lang, glossary, context)
         results: list[Segment] = []
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             for start in range(0, len(segments), TRANSLATE_BATCH_SIZE):
                 batch = segments[start : start + TRANSLATE_BATCH_SIZE]
                 rc = (
@@ -464,7 +466,7 @@ class OpenAICompatible(Provider):
         language = TARGET_LANGUAGE_NAMES.get(target_lang.lower(), target_lang)
         results: list[Segment] = []
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             for index, seg in enumerate(segments):
                 prompt_text = seg.source_text
                 if retrieved_contexts and index < len(retrieved_contexts):
@@ -561,7 +563,7 @@ class OpenAICompatible(Provider):
         results: list[Segment] = []
         system = system_prompt_proofread()
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
             for seg in segments:
                 if not seg.translated:
                     results.append(seg)

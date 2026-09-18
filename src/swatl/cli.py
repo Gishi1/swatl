@@ -55,6 +55,7 @@ def _get_provider_config(provider_name: str) -> dict[str, Any]:
             "mode": "json",
             "instruction": None,
             "stop": [],
+            "timeout": 60.0,
         }
     cfg = configs[provider_name]
     return {
@@ -66,6 +67,7 @@ def _get_provider_config(provider_name: str) -> dict[str, Any]:
         "mode": cfg.mode,
         "instruction": cfg.instruction,
         "stop": list(cfg.stop),
+        "timeout": cfg.timeout,
     }
 
 
@@ -82,6 +84,7 @@ def _resolve_provider_config(provider_name: str):
         mode=cfg.get("mode", "json"),
         instruction=cfg.get("instruction"),
         stop=list(cfg.get("stop", []) or []),
+        timeout=float(cfg.get("timeout", 60.0) or 60.0),
     )
 
 
@@ -180,6 +183,7 @@ def _build_provider(provider: str, target_lang: str = "en"):
             mode=cfg.mode,
             instruction=cfg.instruction,
             stop=cfg.stop,
+            timeout=cfg.timeout,
         ),
         cfg,
     )
@@ -711,6 +715,7 @@ def back_translate(
             api_key=api_key,
             model=cfg.model,
             sample_size=sample_size,
+            timeout=cfg.timeout,
         )
     )
 

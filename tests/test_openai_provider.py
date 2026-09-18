@@ -636,3 +636,36 @@ class TestPlainModeProofreading:
         result = asyncio.run(_provider().proofread([seg], None))
         assert result[0].translated == "Improved."
         assert result[0].status == SegmentStatus.PROOFREAD
+
+
+class TestRequestTimeout:
+    """The HTTP timeout is configurable — local models can take a long time.
+
+    llama-server started with ``--sleep-idle-seconds`` unloads its weights when
+    idle, so the first request after a pause also waits for the model to be read
+    back in. That easily exceeds the 60 s default.
+    """
+
+    def test_default_timeout_is_sixty_seconds(self):
+        assert _provider().timeout == 60.0
+
+    def test_configured_timeout_reaches_httpx(self, monkeypatch):
+        seen: list[float | None] = []
+        real_async_client = httpx.AsyncClient
+
+        def factory(*args, **kwargs):
+            seen.append(kwargs.get("timeout"))
+            kwargs["transport"] = httpx.MockTransport(
+                lambda request: _chat_response('{"p-0001": "Hello"}')
+            )
+            return real_async_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "AsyncClient", factory)
+        provider = OpenAICompatible(
+            base_url="https://mt.example.com/v1", model="local-mt", timeout=300.0
+        )
+        assert provider.timeout == 300.0
+
+        asyncio.run(provider.translate(_segments(1), None, "en", None))
+
+        assert seen and seen[0] == 300.0
