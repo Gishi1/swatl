@@ -30,6 +30,15 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev
 
+      - name: No source file is gitignored
+        run: |
+          ignored=$(git ls-files --others --ignored --exclude-standard -- 'src/**/*.py' 'tests/**/*.py')
+          if [ -n "$ignored" ]; then
+            echo "::error::Source files are excluded by .gitignore:"
+            echo "$ignored"
+            exit 1
+          fi
+
       - name: Lint
         run: uv run ruff check .
 

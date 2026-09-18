@@ -25,21 +25,22 @@ htmlcov/
 # EPUB files (user data — not part of the repo)
 *.epub
 
-# State / temp files
-.swatl-state/
-state/
-state2/
-tmp/
-tmp_path/
-*-state/
-bilingual/
+# State / temp files written by swatl at run time.
+# Anchored to the repository root: an unanchored "state/" also matches the
+# real package directory src/swatl/state/ and silently drops it from the repo.
+/.swatl-state/
+/state/
+/state2/
+/tmp/
+/tmp_path/
+/*-state/
+/bilingual/
 
 # uv's local package cache (when UV_CACHE_DIR points into the repo)
-.uv-cache/
+/.uv-cache/
 
 # Local scratch / end-to-end test workspaces
-.e2e/
-e2e-state/
+/.e2e/
 
 # Logs and local environment
 *.log
@@ -60,3 +61,6 @@ Thumbs.db
 
 # Config overrides (user-specific)
 config/providers.toml
+
+# GitHub CLI cache (when XDG_CACHE_HOME points into the repo)
+/.gh-cache/
