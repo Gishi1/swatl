@@ -252,6 +252,12 @@ this seamless: swatl always asks for a non-streaming response but will assemble
 an SSE stream if a gateway ignores that, and leaving `api_key_env` empty means
 "no authentication", so local gateways need no dummy key.
 
+Some gateways also offer **prompt compression**, which rewrites prompts to save
+tokens and can quietly alter a translation. If a gateway reports that it is
+compressing, swatl logs a warning naming the header, so the quality risk is
+visible rather than silent. Disabling compression at the gateway is recommended
+for translation runs.
+
 ## Development
 
 ```bash
@@ -283,7 +289,7 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 421, including 9 browser end-to-end tests |
+| Tests | 424, including 9 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
 | CLI commands | 12 |

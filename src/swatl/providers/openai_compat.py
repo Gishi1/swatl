@@ -166,6 +166,31 @@ class OpenAICompatible(Provider):
         self.extra = extra or {}
         self.cost_per_token_in: float = 0.0  # provider-specific
         self.cost_per_token_out: float = 0.0
+        self._compression_warned = False
+
+    def _warn_if_gateway_compresses(self, response) -> None:
+        """Warn once when a gateway says it is rewriting our prompts.
+
+        Gateways such as Omniroute compress prompts to save tokens. That can
+        drop instructions or alter source text, which shows up as subtly wrong
+        translations rather than an error, so it is worth surfacing.
+        """
+        if self._compression_warned:
+            return
+        for name, value in response.headers.items():
+            if "compress" not in name.lower():
+                continue
+            if value.strip().lower().startswith(("off", "none", "false", "disabled")):
+                continue
+            self._compression_warned = True
+            logger.warning(
+                "Gateway reports active prompt compression (%s: %s). "
+                "Translations may be altered; disable compression on the gateway "
+                "for faithful output.",
+                name,
+                value,
+            )
+            return
 
     @property
     def provider_type(self) -> str:
@@ -273,6 +298,7 @@ class OpenAICompatible(Provider):
             json=payload,
         )
         response.raise_for_status()
+        self._warn_if_gateway_compresses(response)
         return parse_chat_completion(response)
 
     @staticmethod

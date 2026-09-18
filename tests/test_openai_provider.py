@@ -397,3 +397,45 @@ class TestTranslationCleanup:
         _patch_transport(monkeypatch, handler)
         asyncio.run(_provider().translate(_segments(2), None, "en", None))
         assert "Do not repeat the <segment> tags" in seen["prompt"]
+
+
+class TestGatewayCompressionWarning:
+    """A gateway that rewrites prompts should not do so silently."""
+
+    def test_warns_when_compression_is_active(self, monkeypatch, caplog):
+        def handler(request: httpx.Request) -> httpx.Response:
+            ids = SEGMENT_ID_RE.findall(json.loads(request.content)["messages"][-1]["content"])
+            response = _chat_response(json.dumps({sid: "x" for sid in ids}))
+            response.headers["x-omniroute-compression"] = "stacked; source=default"
+            return response
+
+        _patch_transport(monkeypatch, handler)
+        provider = _provider()
+        with caplog.at_level("WARNING"):
+            asyncio.run(provider.translate(_segments(1), None, "en", None))
+        assert any("prompt compression" in r.message for r in caplog.records)
+
+    def test_does_not_warn_when_compression_is_off(self, monkeypatch, caplog):
+        def handler(request: httpx.Request) -> httpx.Response:
+            ids = SEGMENT_ID_RE.findall(json.loads(request.content)["messages"][-1]["content"])
+            response = _chat_response(json.dumps({sid: "x" for sid in ids}))
+            response.headers["x-omniroute-compression"] = "off; source=off"
+            return response
+
+        _patch_transport(monkeypatch, handler)
+        with caplog.at_level("WARNING"):
+            asyncio.run(_provider().translate(_segments(1), None, "en", None))
+        assert not any("prompt compression" in r.message for r in caplog.records)
+
+    def test_warns_only_once(self, monkeypatch, caplog):
+        def handler(request: httpx.Request) -> httpx.Response:
+            ids = SEGMENT_ID_RE.findall(json.loads(request.content)["messages"][-1]["content"])
+            response = _chat_response(json.dumps({sid: "x" for sid in ids}))
+            response.headers["x-omniroute-compression"] = "stacked"
+            return response
+
+        _patch_transport(monkeypatch, handler)
+        provider = _provider()
+        with caplog.at_level("WARNING"):
+            asyncio.run(provider.translate(_segments(25), None, "en", None))
+        assert sum(1 for r in caplog.records if "prompt compression" in r.message) == 1
