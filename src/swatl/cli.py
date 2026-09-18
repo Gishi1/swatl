@@ -75,6 +75,69 @@ def _resolve_provider_config(provider_name: str):
     )
 
 
+def _build_context_retriever(
+    state: str,
+    db: str,
+    backend: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+):
+    """Build a retriever over a context database, or return None.
+
+    Failing to build one never stops a translation: the run continues without
+    injected context and says why.
+    """
+    from swatl.config import load_embedding_config
+    from swatl.context import build_db_retriever, resolve_embedding_config
+    from swatl.context_db.store import ContextEntryStore
+
+    try:
+        store = ContextEntryStore(state, name=db, create=False)
+    except ValueError as e:
+        console.print(f"[yellow]Context: {e}[/yellow]")
+        return None
+
+    if not store.exists():
+        return None
+
+    count = store.count()
+    if count == 0:
+        console.print(f"[dim]Context DB '{db}' is empty — nothing to retrieve.[/dim]")
+        return None
+
+    resolution = resolve_embedding_config(
+        backend=backend,
+        model=model,
+        base_url=base_url,
+        config_file=load_embedding_config(),
+    )
+    if resolution.config is None:
+        console.print(f"[yellow]Context: {resolution.reason}; continuing without it.[/yellow]")
+        return None
+
+    try:
+        retriever = build_db_retriever(store, resolution.config)
+    except Exception as e:
+        console.print(
+            f"[yellow]Context: could not index '{db}' with "
+            f"{resolution.config.backend} ({e}); continuing without it.[/yellow]"
+        )
+        return None
+
+    if retriever is None:
+        return None
+
+    # The reason can contain TOML section names like [embedding]; escape it so
+    # rich does not swallow them as markup.
+    from rich.markup import escape
+
+    console.print(
+        f"[bold]Context: {count} entries from '{db}'[/bold] "
+        f"[dim]({escape(resolution.reason)}, {retriever.embedder.describe()})[/dim]"
+    )
+    return retriever
+
+
 def _build_provider(provider: str, target_lang: str = "en"):
     """Construct a provider for a CLI command.
 
@@ -190,6 +253,27 @@ def translate(
         "-st",
         help="Translation tone: formal, casual, literary, or technical.",
     ),
+    context_db: str = typer.Option(
+        "default",
+        "--context-db",
+        help="Context database whose entries are injected into translation prompts.",
+    ),
+    context: bool = typer.Option(
+        True,
+        "--context/--no-context",
+        help="Retrieve related entries from the context database while translating.",
+    ),
+    embedding_backend: str | None = typer.Option(
+        None,
+        "--embedding-backend",
+        help="Embedding backend: ollama, local (sentence-transformers) or openai.",
+    ),
+    embedding_model: str | None = typer.Option(
+        None, "--embedding-model", help="Embedding model name (default: bge-m3 for Ollama)."
+    ),
+    embedding_url: str | None = typer.Option(
+        None, "--embedding-url", help="Embedding server URL (default: http://127.0.0.1:11434)."
+    ),
 ) -> None:
     """Translate an EPUB book using an LLM provider."""
     from swatl.glossary import load_glossary
@@ -265,6 +349,18 @@ def translate(
         tm = TranslationMemory(memory_file=tm_path)
         trans.translation_memory = tm
         console.print(f"[bold]Translation memory loaded: {tm.count()} entries[/bold]")
+
+    # Attach curated context from the selected context database.
+    if context:
+        retriever = _build_context_retriever(
+            state,
+            context_db,
+            backend=embedding_backend,
+            model=embedding_model,
+            base_url=embedding_url,
+        )
+        if retriever is not None:
+            trans.context_retriever = retriever
 
     # Run translation
     segments = asyncio.run(trans.translate_all(segments, glossary))

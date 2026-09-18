@@ -278,8 +278,17 @@ async def list_providers():
 @app.post("/api/config")
 async def add_provider(cfg: ProviderConfigReq):
     """Add a provider config (writes to environment-based config)."""
-    from swatl.config import save_provider
+    from swatl.config import EMBEDDING_SECTION, save_provider
     from swatl.models import ProviderConfig
+
+    if cfg.name == EMBEDDING_SECTION:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{EMBEDDING_SECTION}' is reserved for the embedding backend; "
+                "edit the config file directly to change it"
+            ),
+        )
 
     provider = ProviderConfig(
         type="openai-compatible",

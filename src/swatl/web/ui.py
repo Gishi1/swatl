@@ -130,6 +130,9 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 .context-db-bar select:focus { outline: none; border-color: var(--accent); }
 .context-search { display: flex; gap: 10px; margin-bottom: 16px; }
+.context-hint { font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+.context-hint code { background: var(--surface); padding: 1px 5px; border-radius: 3px;
+  font-size: 11px; }
 .context-search input { flex: 1; }
 .context-filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
 .context-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -294,6 +297,10 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         <input type="text" id="ctxSearch" placeholder="Search context entries..." oninput="renderContextEntries()">
         <button class="btn btn-sm" onclick="showImportModal()">Import</button>
         <button class="btn btn-sm btn-outline" onclick="showAddEntryModal()">+ Add</button>
+      </div>
+      <div class="context-hint">
+        Entries are embedded and injected into translation prompts when you run
+        <code>swatl translate --context-db &lt;name&gt;</code>.
       </div>
       <div class="context-filters">
         <button class="btn btn-sm btn-outline ctx-filter active" data-type="">All</button>

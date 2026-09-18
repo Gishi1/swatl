@@ -17,10 +17,23 @@ from swatl.models import Segment
 
 class TestEmbedderConfig:
     def test_default_config(self):
+        # Ollama is the default because it is the zero-download local option
+        # when a server is running; callers override to use the others.
         cfg = EmbedderConfig()
-        assert cfg.backend == "local"
-        assert cfg.model == "nomic-embed-text-v2-moe"
-        assert cfg.dimension > 0
+        assert cfg.backend == "ollama"
+        assert cfg.model == "bge-m3"
+        assert cfg.dimension == 1024
+        assert cfg.base_url == "http://127.0.0.1:11434"
+
+    def test_ollama_unknown_model_adopts_server_dimension(self):
+        cfg = EmbedderConfig(backend="ollama", model="some-custom-embed")
+        assert cfg.dimension == 0  # decided by the first response
+
+    def test_local_backend_reduces_dimensions(self):
+        cfg = EmbedderConfig(
+            backend="local", model="nomic-embed-text-v2-moe", reduce_dimensions=True
+        )
+        assert cfg.dimension == cfg.reduce_to
 
     def test_openai_backend(self):
         cfg = EmbedderConfig(backend="openai", model="text-embedding-3-small")
@@ -161,6 +174,8 @@ class TestContextRetriever:
         embedder = MagicMock()
         embedder.dimension = 3
         embedder.embed_one.return_value = [0.5, 0.5, 0.5]
+        # Batched retrieval embeds the whole batch in one call.
+        embedder.embed.side_effect = lambda texts: [[0.5, 0.5, 0.5] for _ in texts]
         return embedder
 
     @pytest.fixture

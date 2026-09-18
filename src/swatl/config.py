@@ -12,6 +12,10 @@ from swatl.models import ProviderConfig
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "swatl"
 DEFAULT_PROVIDERS_FILE = "providers.toml"
 
+# Reserved top-level section in the providers file: it configures the
+# embedding backend rather than naming a translation provider.
+EMBEDDING_SECTION = "embedding"
+
 
 def load_providers(
     config_path: str | Path | None = None,
@@ -34,6 +38,8 @@ def load_providers(
 
     providers: dict[str, ProviderConfig] = {}
     for name, cfg in data.items():
+        if name == EMBEDDING_SECTION:
+            continue
         providers[name] = ProviderConfig(
             type=cfg.get("type", "openai-compatible"),
             base_url=cfg.get("base_url", ""),
@@ -46,6 +52,39 @@ def load_providers(
             },
         )
     return providers
+
+
+def load_embedding_config(config_path: str | Path | None = None):
+    """Load the optional ``[embedding]`` section of the providers file.
+
+    Returns an :class:`~swatl.context.embedder.EmbedderConfig`, or ``None`` when
+    the section is absent.
+    """
+    from swatl.context.embedder import EmbedderConfig
+
+    path = Path(config_path) if config_path else _find_default_config()
+    if not path.exists():
+        return None
+
+    with open(path, encoding="utf-8") as f:
+        data = tomlkit.load(f)
+
+    section = data.get(EMBEDDING_SECTION)
+    if not section:
+        return None
+
+    api_key = str(section.get("api_key", ""))
+    api_key_env = str(section.get("api_key_env", ""))
+    if not api_key and api_key_env:
+        api_key = os.environ.get(api_key_env, "")
+
+    return EmbedderConfig(
+        backend=str(section.get("backend", "ollama")),
+        model=str(section.get("model", "bge-m3")),
+        base_url=str(section.get("base_url", "")),
+        api_key=api_key,
+        dimension=int(section.get("dimension", 0) or 0),
+    )
 
 
 def get_api_key(provider: ProviderConfig) -> str:

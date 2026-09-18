@@ -42,6 +42,7 @@ is supported, and new pairs are a configuration change rather than a code change
 | **Proofreading pass** | A second LLM pass for grammar, style and naturalness. |
 | **Quality audit** | CJK-residue, omission and glossary-compliance heuristics. |
 | **Interactive review** | Search, filter, edit, accept, skip or requeue individual segments in the browser. |
+| **Semantic context injection** | Curated entries are embedded (Ollama by default) and the nearest ones are added to every translation prompt. |
 | **Translation memory** | Disk-backed cache, reused across runs and books. |
 | **Style guides** | Formal, casual, literary or technical register. |
 | **Bilingual export** | Parallel source/target EPUB for side-by-side reading. |
@@ -108,6 +109,10 @@ uv run swatl back-translate --state ./state --provider deepseek --sample 20
 
 # Language-aware audit for a Japanese source
 uv run swatl audit --state ./state --source-lang ja
+
+# Translate with the context database's entries injected into the prompts
+uv run swatl translate book.epub --context-db santi --state ./state
+uv run swatl translate book.epub --no-context --state ./state
 ```
 
 ## Web GUI
@@ -118,6 +123,7 @@ uv run swatl audit --state ./state --source-lang ja
 |---|---|
 | **Segments** | Server-side search and status filtering, pagination, and a detail panel for editing, accepting, skipping or requeueing a segment |
 | **Context DB** | Create, switch, export and delete named context databases; add, edit, delete, import text/JSON/CSV/HTML entries, or prefill from translated segments |
+| **Context-aware translation** | Entries from the selected database are embedded and injected into each translation prompt as related terminology and reference passages |
 | **Glossary** | Manage term → translation pairs stored with the book's state |
 | **Settings** | Inspect configured providers, add one, and switch the active state directory |
 
@@ -154,7 +160,7 @@ The GUI is a thin client over a small JSON API. Every endpoint takes
 | Command | Description |
 |---|---|
 | `swatl inspect <epub>` | EPUB metadata, segment count and token/cost estimates |
-| `swatl translate <epub>` | Translate a book (glossary, TM, style, `--dry-run`) |
+| `swatl translate <epub>` | Translate a book (glossary, TM, style, context DB, `--dry-run`) |
 | `swatl proofread` | Second-pass refinement of translated segments |
 | `swatl review` | Interactive review (`-y` to auto-accept) |
 | `swatl audit` | Quality audit |
@@ -258,7 +264,7 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 378, including 9 browser end-to-end tests |
+| Tests | 401, including 9 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
 | CLI commands | 12 |
@@ -290,12 +296,54 @@ In the web GUI the **Context DB** tab has the same controls: a database
 selector plus New, Export and Delete. Deleting is refused for `default`, and
 imports always target the database currently selected.
 
+### Using a database during translation
+
+Entries are embedded and the semantically nearest ones are injected into each
+translation prompt, so curated terminology and reference passages actually
+affect the output:
+
+```bash
+uv run swatl translate book.epub --context-db santi --state ./state
+```
+
+The run prints which backend it used, for example:
+
+```
+Context: 5 entries from 'santi' (from the [embedding] config section, ollama:bge-m3)
+```
+
+Retrieval is on by default when the selected database has entries; `--no-context`
+turns it off, and `--embedding-backend` / `--embedding-model` / `--embedding-url`
+override the backend for one run. If the embedding backend is unreachable the
+translation continues without context rather than failing.
+
+### Choosing an embedding backend
+
+| Backend | Notes |
+|---|---|
+| `ollama` (default) | No API key and no model download beyond `ollama pull bge-m3`. `bge-m3` is 1024-dim and handles Chinese well. |
+| `local` | sentence-transformers, runs in-process; downloads a model on first use. |
+| `openai` | Any OpenAI-compatible `/v1/embeddings` endpoint; needs `api_key`/`api_key_env`. |
+
+Configure it in the providers file, or let swatl auto-detect (a reachable
+Ollama server first, then sentence-transformers):
+
+```toml
+[embedding]
+backend = "ollama"
+model = "bge-m3"
+base_url = "http://127.0.0.1:11434"
+```
+
+The same settings can come from `SWATL_EMBEDDING_BACKEND`,
+`SWATL_EMBEDDING_MODEL`, `SWATL_EMBEDDING_URL` and `SWATL_EMBEDDING_API_KEY`.
+
 ## Known limitations
 
 - The quality audit is heuristic: it flags likely problems, it does not prove correctness.
 - Back-translation similarity is lexical overlap, not a learned metric.
 - EPUB2 NCX (`toc.ncx`) navigation labels are not translated; EPUB3 navigation documents are.
-- Context-aware retrieval downloads a sentence-transformers model on first use.
+- Context-aware retrieval needs an embedding backend; the Ollama default requires `ollama pull bge-m3` (about 1.2 GB).
 - The web GUI targets a single local user: it binds to `127.0.0.1` and has no authentication.
 
 ### What gets translated

@@ -57,7 +57,9 @@ src/swatl/
     ├── __init__.py
     ├── embedder.py          # sentence-transformers wrapper + OpenAI fallback
     ├── index.py             # FAISS index management (add/query/save/load)
-    ├── retriever.py         # retrieve + deduplicate + format for prompt
+    ├── retriever.py         # retrieve (single + batched) + format for prompt
+    ├── db_context.py        # build a retriever from a context database,
+    │                        #   resolve/auto-detect the embedding backend
     └── store.py             # persistence (save/load index + metadata)
 
 └── context_db/              # PHASE 7 — Context DB storage and management
@@ -114,6 +116,7 @@ See `docs/adr/` for full ADRs.
 | ContextDB (Phase 6) | Semantic retrieval for cross-chapter consistency; embedding + FAISS. |
 | GUI Redesign + Context DB Mgmt (Phase 7) | Multi-panel layout, Context DB CRUD, keyboard shortcuts, import. |
 | Named context databases | Several databases per state directory; create (optionally copying another), switch, delete, and export/import as JSON or CSV from the GUI and `swatl context`. |
+| Context-aware translation | The selected database's entries are embedded at translate time and the nearest ones are injected into each prompt. Retrieval is batched (one embed call per translation batch) and runs off the event loop; the embedding backend is Ollama by default. |
 
 ---
 

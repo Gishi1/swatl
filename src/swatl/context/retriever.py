@@ -40,6 +40,7 @@ class ContextRetriever:
     min_score: float = 0.2  # minimum cosine similarity threshold
     cross_doc: bool = False  # allow retrieval across documents
     max_tokens: int = 2000  # cap injected context in tokens
+    context_label: str = "Related context (semantically similar, from earlier in the document)"
 
     def retrieve(
         self,
@@ -57,11 +58,42 @@ class ContextRetriever:
         Returns:
             List of RetrievedContext objects, sorted by similarity descending.
         """
-        if self.index.is_empty:
-            return []
+        return self.retrieve_many([source_text], [current_doc], proximity_ids)[0]
 
-        # Embed the source text
-        vector = self.embedder.embed_one(source_text)
+    def retrieve_many(
+        self,
+        source_texts: list[str],
+        current_docs: list[str | None] | None = None,
+        proximity_ids: set[str] | None = None,
+    ) -> list[list[RetrievedContext]]:
+        """Retrieve context for a batch of texts with a single embed call.
+
+        Embedding is the expensive part, so batching it keeps a translation run
+        to one embedding request per translation batch instead of one per
+        segment.
+        """
+        if self.index.is_empty or not source_texts:
+            return [[] for _ in source_texts]
+
+        vectors = self.embedder.embed(source_texts)
+        if len(vectors) != len(source_texts):
+            logger.warning(
+                "Embedder returned %d vectors for %d texts", len(vectors), len(source_texts)
+            )
+            return [[] for _ in source_texts]
+
+        docs = current_docs or [None] * len(source_texts)
+        return [
+            self._query_one(vector, docs[i] if i < len(docs) else None, proximity_ids)
+            for i, vector in enumerate(vectors)
+        ]
+
+    def _query_one(
+        self,
+        vector: list[float],
+        current_doc: str | None,
+        proximity_ids: set[str] | None,
+    ) -> list[RetrievedContext]:
         if not vector:
             return []
 
@@ -92,12 +124,6 @@ class ContextRetriever:
             )
             seen_ids.add(seg_id)
 
-        logger.debug(
-            "Retrieved %d context items for '%s' (filtered from %d)",
-            len(context_items),
-            source_text[:40],
-            len(results),
-        )
         return context_items
 
     def format_context(
@@ -132,10 +158,7 @@ class ContextRetriever:
         if not lines:
             return ""
 
-        return (
-            "Related context (semantically similar, from earlier in the document):\n"
-            + "\n".join(lines)
-        )
+        return self.context_label + ":\n" + "\n".join(lines)
 
     def retrieve_and_format(
         self,
@@ -146,3 +169,13 @@ class ContextRetriever:
         """Retrieve context and format it for prompt injection (convenience method)."""
         items = self.retrieve(source_text, current_doc, proximity_ids)
         return self.format_context(items)
+
+    def retrieve_many_formatted(
+        self,
+        source_texts: list[str],
+        current_docs: list[str | None] | None = None,
+        proximity_ids: set[str] | None = None,
+    ) -> list[str]:
+        """Batch variant of :meth:`retrieve_and_format`."""
+        batches = self.retrieve_many(source_texts, current_docs, proximity_ids)
+        return [self.format_context(items) for items in batches]

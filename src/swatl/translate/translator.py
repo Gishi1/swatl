@@ -104,17 +104,20 @@ class Translator:
                 for attempt in range(1, self.retry_max + 1):
                     try:
                         context = build_context_window(results, n_previous=3)
-                        # Build per-segment retrieved context via ContextDB
-                        retrieved_contexts: list[str | None] = []
+
+                        # Retrieved context is fetched for the whole batch at
+                        # once: embedding is the slow part, and the retriever is
+                        # synchronous, so it runs in a worker thread to keep the
+                        # event loop free for the other in-flight batches.
                         if self.context_retriever:
                             proximity_ids = {s.id for s in results}
-                            for seg in batch:
-                                rc = self.context_retriever.retrieve_and_format(
-                                    seg.source_text,
-                                    current_doc=seg.doc,
-                                    proximity_ids=proximity_ids,
-                                )
-                                retrieved_contexts.append(rc if rc else None)
+                            retrieved = await asyncio.to_thread(
+                                self.context_retriever.retrieve_many_formatted,
+                                [seg.source_text for seg in batch],
+                                [seg.doc for seg in batch],
+                                proximity_ids,
+                            )
+                            retrieved_contexts: list[str | None] = [rc or None for rc in retrieved]
                         else:
                             retrieved_contexts = [None] * len(batch)
 
@@ -147,10 +150,12 @@ class Translator:
                         )
                         if attempt < self.retry_max:
                             await asyncio.sleep(1.5**attempt)
-                # All retries failed
+                # All retries failed. Mark the whole batch: returning inside
+                # the loop used to leave every segment after the first pending.
                 for seg in batch:
                     seg.status = SegmentStatus.FAILED
-                    return batch
+                    seg.translated = None
+                return batch
 
         # Split into batches
         batches = [

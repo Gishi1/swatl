@@ -47,3 +47,18 @@ type = "openai-compatible"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 model = "qwen3-mt"
 api_key_env = "DASHSCOPE_API_KEY"
+
+# ── Embedding backend (optional) ───────────────────────────────────────────
+# Used to index a context database so its entries can be injected into
+# translation prompts as related context. Requires `pip install faiss-cpu`
+# (already a dependency).
+#
+# Ollama is the default and needs no API key:
+#   ollama pull bge-m3          # 1024-dim, strong on Chinese and English
+#
+# When this section is absent, swatl auto-detects: a reachable Ollama server
+# first, then sentence-transformers if it is installed.
+[embedding]
+backend = "ollama"
+model = "bge-m3"
+base_url = "http://127.0.0.1:11434"
