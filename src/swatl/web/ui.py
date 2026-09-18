@@ -190,6 +190,21 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 /* ── Tab panels ─────────────────────────────────────────────────── */
 .tab-panel { display: none; }
 .tab-panel.active { display: block; }
+
+/* ── Narrow / mobile layout ─────────────────────────────────────── */
+@media (max-width: 820px) {
+  .topbar { flex-wrap: wrap; gap: 8px; }
+  .topbar .state-input { width: 100%; }
+  .topbar .state-input input { flex: 1; width: auto; }
+  .main { flex-direction: column; height: auto; }
+  .sidebar { width: 100%; border-right: none;
+    border-bottom: 1px solid var(--border); }
+  .content { padding: 14px; }
+  .detail-panel { width: 100%; }
+  .segment-card .top { flex-wrap: wrap; gap: 6px; }
+  .context-search { flex-wrap: wrap; }
+  .modal { width: 92vw; }
+}
 </style>
 </head>
 <body>
