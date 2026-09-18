@@ -70,6 +70,10 @@ def writeback_segments(
         if full_path.exists():
             _set_lang(full_path, target_lang)
 
+    # Declare the target language in the package document so readers pick the
+    # right dictionary, hyphenation and speech rules for the exported book.
+    _set_opf_language(epub_dir, target_lang)
+
     # Re-zip the EPUB
     _create_output_epub(epub_dir, output_path)
 
@@ -77,6 +81,66 @@ def writeback_segments(
         "Write-back complete: %d documents modified, output: %s", len(modified_docs), output_path
     )
     return Path(output_path)
+
+
+def _find_package_document(epub_dir: Path) -> Path | None:
+    """Locate the OPF package document referenced by META-INF/container.xml."""
+    from xml.etree import ElementTree as ET
+
+    container = epub_dir / "META-INF" / "container.xml"
+    if container.exists():
+        try:
+            root = ET.parse(container).getroot()
+        except ET.ParseError:
+            root = None
+        if root is not None:
+            for element in root.iter():
+                if element.tag.rsplit("}", 1)[-1] == "rootfile":
+                    full_path = element.get("full-path")
+                    if full_path:
+                        candidate = epub_dir / full_path
+                        if candidate.exists():
+                            return candidate
+
+    opfs = sorted(epub_dir.glob("*.opf")) or sorted(epub_dir.rglob("*.opf"))
+    return opfs[0] if opfs else None
+
+
+def _set_opf_language(epub_dir: Path, target_lang: str) -> None:
+    """Set ``<dc:language>`` in the OPF package document to *target_lang*."""
+    from lxml import etree
+
+    opf_path = _find_package_document(epub_dir)
+    if opf_path is None:
+        logger.warning("No OPF package document found; cannot update dc:language")
+        return
+
+    try:
+        tree = etree.parse(str(opf_path))
+    except etree.XMLSyntaxError as e:
+        logger.warning("Could not parse %s: %s", opf_path, e)
+        return
+
+    root = tree.getroot()
+    DC_NS = "http://purl.org/dc/elements/1.1/"
+    languages = [el for el in root.iter() if el.tag.rsplit("}", 1)[-1] == "language"]
+    if not languages:
+        # dc:language missing entirely — create it inside <metadata>.
+        metadata = next(
+            (el for el in root if el.tag.rsplit("}", 1)[-1] == "metadata"),
+            None,
+        )
+        if metadata is None:
+            logger.warning("OPF has no <metadata> element; cannot set dc:language")
+            return
+        element = etree.SubElement(metadata, f"{{{DC_NS}}}language")
+        element.text = target_lang
+    else:
+        for element in languages:
+            element.text = target_lang
+
+    tree.write(str(opf_path), encoding="UTF-8", xml_declaration=True)
+    logger.debug("Set dc:language=%s in %s", target_lang, opf_path.name)
 
 
 def _write_bilingual_doc(

@@ -198,7 +198,7 @@ On NixOS (externally managed Python), use the `nix-shell` recipe in
 |---|---|
 | Source files | 39 Python files, ~6.2k lines (13 modules) |
 | Test files | 26 |
-| Tests | 299 (all passing) |
+| Tests | 301 (all passing) |
 | Lint | `ruff check` — 0 errors |
 | Format | `ruff format --check` — clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
@@ -207,6 +207,9 @@ On NixOS (externally managed Python), use the `nix-shell` recipe in
 
 ## Known Limitations
 
+- Only spine documents are translated. The EPUB3 navigation document (table of
+  contents) and `<head><title>` elements keep their source language, so a
+  translated book can still show source-language chapter names in a reader's TOC.
 - The quality audit is heuristic: it flags likely problems, it does not prove correctness.
 - Back-translation similarity is lexical overlap, not a learned metric.
 - Context-aware embedding retrieval downloads a sentence-transformers model on first use.

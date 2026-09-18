@@ -196,3 +196,41 @@ class TestEpubConformance:
                 if name.endswith((".xhtml", ".html")):
                     content = zf.read(name)
                     assert b"<!--?xml" not in content, name
+
+
+class TestPackageLanguage:
+    """The exported package document must declare the target language."""
+
+    def _export(self, fixture_epub, tmp_path):
+        import asyncio
+
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+        from swatl.providers.mock import MockProvider
+        from swatl.translate.translator import Translator
+        from swatl.writeback.writer import writeback_segments
+
+        info, epub_dir = extract_epub(fixture_epub)
+        segments, _ = extract_segments_from_epub(
+            epub_dir, info.spine_items, info.mime_types, info.language
+        )
+        segments = asyncio.run(Translator(MockProvider(), "zh", "en").translate_all(segments))
+        output_path = tmp_path / "output.epub"
+        writeback_segments(epub_dir, segments, target_lang="en", output_path=output_path)
+        return output_path
+
+    def test_dc_language_updated_to_target(self, fixture_epub, tmp_path):
+        output_path = self._export(fixture_epub, tmp_path)
+        with zipfile.ZipFile(output_path) as zf:
+            opf = zf.read("content.opf").decode("utf-8")
+        assert "<dc:language>en</dc:language>" in opf
+        assert "<dc:language>zh</dc:language>" not in opf
+
+    def test_source_opf_is_not_modified_in_place(self, fixture_epub, tmp_path):
+        """The extraction directory is scratch space, but the writer must only
+        touch the extracted copy — never the user's original EPUB."""
+        import zipfile as zf_mod
+
+        before = zf_mod.ZipFile(fixture_epub).read("content.opf")
+        self._export(fixture_epub, tmp_path)
+        after = zf_mod.ZipFile(fixture_epub).read("content.opf")
+        assert before == after
