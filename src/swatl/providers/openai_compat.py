@@ -73,12 +73,38 @@ def extract_json_object(text: str) -> dict[str, Any] | None:
     return None
 
 
+# Instruction used by "plain" mode unless the provider config overrides it.
+DEFAULT_PLAIN_INSTRUCTION = (
+    "Translate the following text into {target_language}. "
+    "Output only the translation, without any explanation:"
+)
+
+# Human-readable language names for instruction-style prompts.
+TARGET_LANGUAGE_NAMES = {
+    "en": "English",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "ru": "Russian",
+    "pt": "Portuguese",
+    "it": "Italian",
+}
+
 _SEGMENT_WRAPPER_RE = re.compile(
     r"""^\s*<segment\b[^>]*>\s*(?P<body>.*?)\s*</segment>\s*$""", re.DOTALL | re.IGNORECASE
 )
 _SEGMENT_OPEN_RE = re.compile(r"^\s*<segment\b[^>]*>\s*", re.IGNORECASE)
 _SEGMENT_CLOSE_RE = re.compile(r"\s*</segment>\s*$", re.IGNORECASE)
 _FENCE_RE_FULL = re.compile(r"^\s*```[a-zA-Z]*\s*(?P<body>.*?)\s*```\s*$", re.DOTALL)
+# Model control tokens that leak into the text on local runtimes, e.g.
+# "<eos:6124c78e>" or "<|hy_Assistant|>". Deliberately narrow: a plain tag such
+# as "</em>" is real markup and must survive.
+_CONTROL_TOKEN_RE = re.compile(
+    r"<eos:[0-9a-fA-F]+>|<[\|\uff5c][^>]{0,40}[\|\uff5c]>",
+)
 
 
 def _clean_translation(text: str) -> str:
@@ -89,6 +115,10 @@ def _clean_translation(text: str) -> str:
     prompt delimits segments with XML tags.
     """
     cleaned = text.strip()
+
+    # Control tokens first: a trailing "<eos:...>" would otherwise hide the
+    # closing tag from the wrapper check below.
+    cleaned = _CONTROL_TOKEN_RE.sub("", cleaned).strip()
 
     wrapper = _SEGMENT_WRAPPER_RE.match(cleaned)
     if wrapper:
@@ -158,12 +188,24 @@ class OpenAICompatible(Provider):
     """
 
     def __init__(
-        self, base_url: str, model: str, api_key: str = "", extra: dict[str, Any] | None = None
+        self,
+        base_url: str,
+        model: str,
+        api_key: str = "",
+        extra: dict[str, Any] | None = None,
+        mode: str = "json",
+        instruction: str | None = None,
+        stop: list[str] | None = None,
     ) -> None:
+        if mode not in ("json", "plain"):
+            raise ValueError(f"Unknown provider mode {mode!r}: use 'json' or 'plain'")
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.extra = extra or {}
+        self.mode = mode
+        self.instruction = instruction or DEFAULT_PLAIN_INSTRUCTION
+        self.stop = list(stop or [])
         self.cost_per_token_in: float = 0.0  # provider-specific
         self.cost_per_token_out: float = 0.0
         self._compression_warned = False
@@ -332,6 +374,11 @@ class OpenAICompatible(Provider):
         if not segments:
             return []
 
+        if self.mode == "plain":
+            return await self._translate_plain(
+                segments, target_lang, retrieved_contexts=retrieved_contexts
+            )
+
         system = system_prompt or self._build_system_prompt(target_lang, glossary, context)
         results: list[Segment] = []
 
@@ -378,6 +425,74 @@ class OpenAICompatible(Provider):
                         seg.tokens_in = usage_in // max(len(batch), 1)
                         seg.tokens_out = usage_out // max(len(batch), 1)
                     results.append(seg)
+
+        return results
+
+    async def _translate_plain(
+        self,
+        segments: list[Segment],
+        target_lang: str,
+        retrieved_contexts: list[str | None] | None = None,
+    ) -> list[Segment]:
+        """Translate one segment per request, instruction style.
+
+        Dedicated machine-translation models (Tencent Hy-MT2 and friends) are
+        trained to answer a short instruction with the translation only; asking
+        them for a JSON id map produces prose or an empty response.
+        """
+        import httpx
+
+        language = TARGET_LANGUAGE_NAMES.get(target_lang.lower(), target_lang)
+        results: list[Segment] = []
+
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for index, seg in enumerate(segments):
+                prompt_text = seg.source_text
+                if retrieved_contexts and index < len(retrieved_contexts):
+                    hint = retrieved_contexts[index]
+                    if hint:
+                        prompt_text = f"{hint}\n\n{prompt_text}"
+
+                user_prompt = self.instruction.replace("{target_language}", language)
+                user_prompt = f"{user_prompt}\n\n{prompt_text}"
+
+                payload: dict[str, Any] = {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": user_prompt}],
+                    # Greedy decoding: translation should not be creative.
+                    "temperature": 0,
+                    "stream": False,
+                    **self.extra,
+                }
+                if self.stop:
+                    payload["stop"] = self.stop
+
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers=self._headers(),
+                        json=payload,
+                    )
+                    response.raise_for_status()
+                    self._warn_if_gateway_compresses(response)
+                    content, _usage = parse_chat_completion(response)
+                except (httpx.HTTPError, ValueError, KeyError) as e:
+                    logger.warning("Plain translation failed for %s: %s", seg.id, e)
+                    seg.status = SegmentStatus.FAILED
+                    seg.translated = None
+                    results.append(seg)
+                    continue
+
+                translated = _clean_translation(content or "")
+                if not translated:
+                    logger.warning("Empty translation for %s", seg.id)
+                    seg.status = SegmentStatus.FAILED
+                    seg.translated = None
+                else:
+                    seg.translated = translated
+                    seg.status = SegmentStatus.TRANSLATED
+                    seg.provider = self.model
+                results.append(seg)
 
         return results
 

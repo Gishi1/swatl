@@ -100,4 +100,14 @@ class ProviderConfig(BaseModel):
     base_url: str = ""
     model: str = ""
     api_key_env: str = ""  # environment variable name for the API key
+    # How the provider is prompted:
+    #   "json"  — batch segments into one request, ask for a JSON id→translation map
+    #   "plain" — one segment per request, instruction style, raw text back.
+    #             Required by dedicated machine-translation models such as
+    #             Tencent Hy-MT2, which do not follow JSON-batch instructions.
+    mode: str = "json"
+    # Instruction template for "plain" mode. {target_language} is substituted.
+    instruction: str | None = None
+    # Sequences that end a generation (many local MT models emit control tokens).
+    stop: list[str] = Field(default_factory=list)
     extra: dict[str, Any] = Field(default_factory=dict)

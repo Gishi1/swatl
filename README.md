@@ -290,7 +290,7 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 424, including 9 browser end-to-end tests |
+| Tests | 433, including 9 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
 | CLI commands | 12 |
@@ -342,6 +342,29 @@ Retrieval is on by default when the selected database has entries; `--no-context
 turns it off, and `--embedding-backend` / `--embedding-model` / `--embedding-url`
 override the backend for one run. If the embedding backend is unreachable the
 translation continues without context rather than failing.
+
+### Prompting modes
+
+Chat models are prompted with a batched JSON request. Dedicated
+machine-translation models — Tencent **Hy-MT2**, ALMA, Tower and similar — are
+not trained that way: they answer a short instruction with the translation and
+nothing else. Give those a `mode = "plain"` provider, which sends one segment
+per request with greedy decoding and uses the raw response:
+
+```toml
+[hy-mt2]
+type = "openai-compatible"
+base_url = "http://localhost:8081/v1"
+model = "hy-mt2"
+mode = "plain"
+api_key_env = ""
+instruction = "将以下文本翻译成{target_language},注意只需要输出翻译后的结果,不要额外解释:"
+stop = ["<eos:6124c78e>", "<｜hy_User｜>", "<｜hy_Assistant｜>"]
+```
+
+`{target_language}` is replaced with the target language's name. `stop` is
+optional and mainly useful for local runtimes; model control tokens that leak
+into the text are stripped either way.
 
 ### Choosing an embedding backend
 

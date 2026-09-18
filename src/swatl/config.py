@@ -45,10 +45,22 @@ def load_providers(
             base_url=cfg.get("base_url", ""),
             model=cfg.get("model", ""),
             api_key_env=cfg.get("api_key_env", ""),
+            mode=str(cfg.get("mode", "json")),
+            instruction=cfg.get("instruction"),
+            stop=[str(s) for s in cfg.get("stop", [])],
             extra={
                 k: v
                 for k, v in cfg.items()
-                if k not in ("type", "base_url", "model", "api_key_env")
+                if k
+                not in (
+                    "type",
+                    "base_url",
+                    "model",
+                    "api_key_env",
+                    "mode",
+                    "instruction",
+                    "stop",
+                )
             },
         )
     return providers
@@ -138,6 +150,12 @@ def save_provider(
     data[name]["base_url"] = provider.base_url
     data[name]["model"] = provider.model
     data[name]["api_key_env"] = provider.api_key_env
+    if provider.mode and provider.mode != "json":
+        data[name]["mode"] = provider.mode
+    if provider.instruction:
+        data[name]["instruction"] = provider.instruction
+    if provider.stop:
+        data[name]["stop"] = provider.stop
 
     with open(path, "w", encoding="utf-8") as f:
         tomlkit.dump(data, f)

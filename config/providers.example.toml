@@ -67,3 +67,22 @@ api_key_env = "DASHSCOPE_API_KEY"
 backend = "ollama"
 model = "bge-m3"
 base_url = "http://127.0.0.1:11434"
+
+# ── Dedicated machine-translation models ───────────────────────────────────
+# Models like Tencent Hy-MT2 answer a short instruction with the translation
+# only; they do not follow the JSON id-map prompt used for chat models, so set
+# mode = "plain". Each segment is then sent as its own request with greedy
+# decoding, and the raw response is used as the translation.
+#
+#   llama-server -m Hy-MT2-30B-A3B-Q4_K_M.gguf --cpu-moe -ngl 99 \
+#     --host 0.0.0.0 --port 8081
+#
+# [hy-mt2]
+# type = "openai-compatible"
+# base_url = "http://localhost:8081/v1"
+# model = "hy-mt2"
+# mode = "plain"
+# api_key_env = ""
+# # The instruction from the model card; {target_language} is substituted.
+# instruction = "将以下文本翻译成{target_language},注意只需要输出翻译后的结果,不要额外解释:"
+# stop = ["<eos:6124c78e>", "<｜hy_User｜>", "<｜hy_Assistant｜>"]

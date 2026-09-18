@@ -71,6 +71,9 @@ def _resolve_provider_config(provider_name: str):
         base_url=cfg.get("base_url", ""),
         model=cfg.get("model", ""),
         api_key_env=cfg.get("api_key_env", ""),
+        mode=cfg.get("mode", "json"),
+        instruction=cfg.get("instruction"),
+        stop=list(cfg.get("stop", []) or []),
     )
 
 
@@ -162,7 +165,14 @@ def _build_provider(provider: str, target_lang: str = "en"):
         raise SystemExit(1) from e
 
     return (
-        OpenAICompatible(base_url=cfg.base_url, model=cfg.model, api_key=api_key),
+        OpenAICompatible(
+            base_url=cfg.base_url,
+            model=cfg.model,
+            api_key=api_key,
+            mode=cfg.mode,
+            instruction=cfg.instruction,
+            stop=cfg.stop,
+        ),
         cfg,
     )
 

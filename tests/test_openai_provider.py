@@ -439,3 +439,123 @@ class TestGatewayCompressionWarning:
         with caplog.at_level("WARNING"):
             asyncio.run(provider.translate(_segments(25), None, "en", None))
         assert sum(1 for r in caplog.records if "prompt compression" in r.message) == 1
+
+
+class TestPlainMode:
+    """Instruction-style translation for dedicated MT models (Hy-MT2 etc.)."""
+
+    def _plain(self, **kwargs):
+        return OpenAICompatible(
+            base_url="https://mt.example.com/v1", model="hy-mt2", api_key="", mode="plain", **kwargs
+        )
+
+    def test_unknown_mode_is_rejected(self):
+        with pytest.raises(ValueError, match="Unknown provider mode"):
+            OpenAICompatible("https://x/v1", "m", mode="chatty")
+
+    def test_one_request_per_segment_with_raw_text_out(self, monkeypatch):
+        seen = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            seen.append(body)
+            return _chat_response("The universe is vast.")
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(self._plain().translate(_segments(3), None, "en", None))
+
+        assert len(seen) == 3  # one request per segment, no JSON batching
+        assert [s.translated for s in result] == ["The universe is vast."] * 3
+        assert all(s.status == SegmentStatus.TRANSLATED for s in result)
+
+    def test_prompt_uses_an_instruction_and_no_system_role(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return _chat_response("ok")
+
+        _patch_transport(monkeypatch, handler)
+        asyncio.run(self._plain().translate(_segments(1), None, "ja", None))
+
+        messages = seen["body"]["messages"]
+        assert len(messages) == 1 and messages[0]["role"] == "user"
+        assert "Japanese" in messages[0]["content"]
+        assert "中文段落" in messages[0]["content"]
+        assert seen["body"]["temperature"] == 0
+        assert seen["body"]["stream"] is False
+
+    def test_custom_instruction_is_used(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return _chat_response("ok")
+
+        _patch_transport(monkeypatch, handler)
+        provider = self._plain(
+            instruction="\u5c06\u4ee5\u4e0b\u6587\u672c\u7ffb\u8bd1\u6210{target_language}:"
+        )
+        asyncio.run(provider.translate(_segments(1), None, "en", None))
+        assert seen["body"]["messages"][0]["content"].startswith(
+            "\u5c06\u4ee5\u4e0b\u6587\u672c\u7ffb\u8bd1\u6210English:"
+        )
+
+    def test_stop_sequences_are_forwarded(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return _chat_response("ok")
+
+        _patch_transport(monkeypatch, handler)
+        provider = self._plain(stop=["<eos:6124c78e>", "<\uff5chy_User\uff5c>"])
+        asyncio.run(provider.translate(_segments(1), None, "en", None))
+        assert seen["body"]["stop"] == ["<eos:6124c78e>", "<\uff5chy_User\uff5c>"]
+
+    def test_control_tokens_are_stripped_from_the_output(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _chat_response("<segment>Sophon</segment><eos:6124c78e>")
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(self._plain().translate(_segments(1), None, "en", None))
+        assert result[0].translated == "Sophon"
+
+    def test_retrieved_context_is_prepended(self, monkeypatch):
+        seen = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen["body"] = json.loads(request.content)
+            return _chat_response("ok")
+
+        _patch_transport(monkeypatch, handler)
+        asyncio.run(
+            self._plain().translate(
+                _segments(1),
+                None,
+                "en",
+                None,
+                retrieved_contexts=["Reference context:\n\u667a\u5b50 \u2192 Sophon"],
+            )
+        )
+        content = seen["body"]["messages"][0]["content"]
+        assert "Sophon" in content and content.index("Sophon") < content.index(
+            "\u4e2d\u6587\u6bb5\u843d"
+        )
+
+    def test_empty_response_marks_the_segment_failed(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _chat_response("")
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(self._plain().translate(_segments(1), None, "en", None))
+        assert result[0].status == SegmentStatus.FAILED
+        assert result[0].translated is None
+
+    def test_http_error_marks_the_batch_failed_without_raising(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(500, json={"error": "boom"})
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(self._plain().translate(_segments(3), None, "en", None))
+        assert all(s.status == SegmentStatus.FAILED for s in result)
