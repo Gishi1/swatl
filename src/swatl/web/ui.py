@@ -120,6 +120,15 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 .detail-panel .actions { display: flex; gap: 8px; margin-top: 16px; flex-wrap: wrap; }
 
 /* ── Context DB Tab ─────────────────────────────────────────────── */
+.context-db-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  flex-wrap: wrap; }
+.context-db-bar label { font-size: 11px; color: var(--muted); text-transform: uppercase;
+  letter-spacing: 0.05em; }
+.context-db-bar select {
+  background: var(--bg); border: 1px solid var(--border); color: var(--fg);
+  padding: 6px 10px; border-radius: var(--radius); font-size: 13px; min-width: 180px;
+}
+.context-db-bar select:focus { outline: none; border-color: var(--accent); }
 .context-search { display: flex; gap: 10px; margin-bottom: 16px; }
 .context-search input { flex: 1; }
 .context-filters { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -274,6 +283,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 
     <!-- ═══ Context DB Tab ═══ -->
     <div class="tab-panel" id="panel-context">
+      <div class="context-db-bar">
+        <label for="ctxDb">Database</label>
+        <select id="ctxDb" onchange="onContextDbChange()"></select>
+        <button class="btn btn-sm btn-outline" onclick="showNewDbModal()">New</button>
+        <button class="btn btn-sm btn-outline" onclick="exportContextDb()">Export</button>
+        <button class="btn btn-sm btn-red" onclick="deleteContextDb()">Delete</button>
+      </div>
       <div class="context-search">
         <input type="text" id="ctxSearch" placeholder="Search context entries..." oninput="renderContextEntries()">
         <button class="btn btn-sm" onclick="showImportModal()">Import</button>
@@ -337,6 +353,26 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   <div class="actions">
     <button class="btn btn-sm btn-outline" onclick="hideConfigModal()">Cancel</button>
     <button class="btn btn-sm btn-green" onclick="saveProvider()">Save</button>
+  </div>
+</div>
+
+<!-- New Context Database Modal -->
+<div class="modal" id="newDbModal">
+  <h3>New Context Database</h3>
+  <div class="form-group">
+    <label>Name</label>
+    <input id="newDbName" placeholder="santi" autocomplete="off">
+    <div style="font-size:11px;color:var(--muted);margin-top:4px">
+      Letters, digits, dot, dash and underscore.
+    </div>
+  </div>
+  <div class="form-group">
+    <label>Copy entries from</label>
+    <select id="newDbCopy"><option value="">Nothing — start empty</option></select>
+  </div>
+  <div class="actions">
+    <button class="btn btn-sm btn-outline" onclick="hideNewDbModal()">Cancel</button>
+    <button class="btn btn-sm btn-green" onclick="saveNewContextDb()">Create</button>
   </div>
 </div>
 
@@ -422,6 +458,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 <script>
 let segments = [];
 let contextEntries = [];
+let contextDbs = [];
 let glossary = { entries: [] };
 let activeSeg = null;
 let ctxFilterType = "";
@@ -507,7 +544,7 @@ function toast(msg, isError) {
 function switchTab(name) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === name));
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + name));
-  if (name === 'context') loadContextEntries();
+  if (name === 'context') { loadContextDatabases().then(loadContextEntries); }
   if (name === 'glossary') loadGlossary();
   if (name === 'settings') loadProviders();
 }
@@ -558,7 +595,8 @@ async function refreshStats() {
     document.getElementById('statFailed').textContent = counts['failed']||0;
   } catch(e) { /* stats are advisory */ }
   try {
-    const ctx = await api('GET', '/context/stats', { params: { state_dir: getStateDir() } });
+    const ctx = await api('GET', '/context/stats',
+      { params: { state_dir: getStateDir(), db: getContextDb() } });
     document.getElementById('statContext').textContent = ctx.total;
   } catch(e) { /* stats are advisory */ }
 }
@@ -676,7 +714,7 @@ async function regenerate(id) {
 
 // ── Keyboard shortcuts ──────────────────────────────────────────
 document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') { closeDetail(); hideConfigModal(); hideAddContextModal(); hideEditContextModal(); hideImportModal(); hideGlossaryModal(); }
+  if (e.key === 'Escape') { closeDetail(); hideConfigModal(); hideAddContextModal(); hideEditContextModal(); hideImportModal(); hideGlossaryModal(); hideNewDbModal(); }
   if (e.key === 'f' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); document.getElementById('filter').focus(); }
   if (e.key === '1' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); switchTab('segments'); }
   if (e.key === '2' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); switchTab('context'); }
@@ -685,13 +723,96 @@ document.addEventListener('keydown', function(e) {
 });
 
 // ── Context DB ───────────────────────────────────────────────────
+function getContextDb() {
+  const select = document.getElementById('ctxDb');
+  return (select && select.value) || 'default';
+}
+
+async function loadContextDatabases(selectName) {
+  const sd = getStateDir();
+  try {
+    contextDbs = await api('GET', '/context/databases', {params: {state_dir: sd}});
+  } catch(e) {
+    contextDbs = [{name: 'default', entries: 0, exists: false}];
+  }
+  const select = document.getElementById('ctxDb');
+  const wanted = selectName || select.value || 'default';
+  select.innerHTML = contextDbs.map(d =>
+    `<option value="${escHtml(d.name)}">${escHtml(d.name)} (${d.entries})</option>`).join('');
+  if (contextDbs.some(d => d.name === wanted)) select.value = wanted;
+  return select.value;
+}
+
+async function onContextDbChange() {
+  await loadContextEntries();
+  await refreshStats();
+}
+
 async function loadContextEntries() {
   const sd = getStateDir();
   try {
-    contextEntries = await api('GET', '/context', {params: {state_dir: sd}});
+    contextEntries = await api('GET', '/context', {params: {state_dir: sd, db: getContextDb()}});
     renderContextEntries();
     document.getElementById('statContext').textContent = contextEntries.length;
   } catch(e) { toast('Failed to load context: ' + e.message, true); }
+}
+
+function showNewDbModal() {
+  document.getElementById('newDbName').value = '';
+  const copy = document.getElementById('newDbCopy');
+  copy.innerHTML = '<option value="">Nothing — start empty</option>'
+    + contextDbs.map(d => `<option value="${escHtml(d.name)}">${escHtml(d.name)} (${d.entries})</option>`).join('');
+  document.getElementById('newDbModal').className = 'modal open';
+  document.getElementById('newDbName').focus();
+}
+
+function hideNewDbModal() {
+  document.getElementById('newDbModal').className = 'modal';
+}
+
+async function saveNewContextDb() {
+  const name = document.getElementById('newDbName').value.trim();
+  if (!name) { toast('Database name is required', true); return; }
+  const copyFrom = document.getElementById('newDbCopy').value;
+  try {
+    await api('POST', '/context/databases',
+      {params: {state_dir: getStateDir()}, body: {name, copy_from: copyFrom || null}});
+    hideNewDbModal();
+    await loadContextDatabases(name);
+    await loadContextEntries();
+    await refreshStats();
+    toast(`Database '${name}' created`);
+  } catch(e) { toast('Could not create database: ' + e.message, true); }
+}
+
+async function deleteContextDb() {
+  const name = getContextDb();
+  if (name === 'default') { toast('The default database cannot be deleted', true); return; }
+  if (!confirm(`Delete context database '${name}' and all of its entries?`)) return;
+  try {
+    await api('DELETE', '/context/databases/' + encodeURIComponent(name),
+      {params: {state_dir: getStateDir()}});
+    await loadContextDatabases('default');
+    await loadContextEntries();
+    await refreshStats();
+    toast(`Database '${name}' deleted`);
+  } catch(e) { toast('Could not delete database: ' + e.message, true); }
+}
+
+function exportContextDb() {
+  const sd = getStateDir();
+  const db = getContextDb();
+  const url = API + '/context/export?state_dir=' + encodeURIComponent(sd)
+    + '&db=' + encodeURIComponent(db) + '&format=json';
+  // A download link keeps the single-page app on its current view, unlike
+  // assigning window.location.
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `context-${db}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  toast(`Exported '${db}' as JSON`);
 }
 
 function renderContextEntries() {
@@ -747,9 +868,10 @@ async function saveContextEntry() {
   };
   if (!entry.source_text) { toast('Source text is required', true); return; }
   try {
-    await api('POST', '/context', {params: {state_dir: getStateDir()}, body: entry});
+    await api('POST', '/context', {params: {state_dir: getStateDir(), db: getContextDb()}, body: entry});
     toast('Context entry added');
     hideAddContextModal();
+    await loadContextDatabases();
     loadContextEntries();
   } catch(e) { toast(e.message, true); }
 }
@@ -776,7 +898,7 @@ async function updateContextEntry() {
     tags: document.getElementById('editCtxTags').value.split(',').map(s => s.trim()).filter(Boolean),
   };
   try {
-    await api('PATCH', '/context/' + id, {params: {state_dir: getStateDir()}, body: body});
+    await api('PATCH', '/context/' + id, {params: {state_dir: getStateDir(), db: getContextDb()}, body: body});
     toast('Context entry updated');
     hideEditContextModal();
     loadContextEntries();
@@ -786,8 +908,9 @@ async function updateContextEntry() {
 async function deleteContextEntry(id) {
   if (!confirm('Delete this context entry?')) return;
   try {
-    await api('DELETE', '/context/' + id, {params: {state_dir: getStateDir()}});
+    await api('DELETE', '/context/' + id, {params: {state_dir: getStateDir(), db: getContextDb()}});
     toast('Context entry deleted');
+    await loadContextDatabases();
     loadContextEntries();
   } catch(e) { toast(e.message, true); }
 }
@@ -808,7 +931,8 @@ async function doImportText() {
   formData.append('chunk_size', chunkSize);
   formData.append('overlap', overlap);
   try {
-    const r = await fetch(API + '/context/import/text?state_dir=' + encodeURIComponent(sd), {
+    const r = await fetch(API + '/context/import/text?state_dir=' + encodeURIComponent(sd)
+      + '&db=' + encodeURIComponent(getContextDb()), {
       method: 'POST', body: formData,
     });
     if (!r.ok) throw new Error(await errorText(r));
@@ -827,7 +951,8 @@ async function doImportJSON() {
   formData.append('content', content);
   formData.append('source_name', source);
   try {
-    const r = await fetch(API + '/context/import/json?state_dir=' + encodeURIComponent(sd), {
+    const r = await fetch(API + '/context/import/json?state_dir=' + encodeURIComponent(sd)
+      + '&db=' + encodeURIComponent(getContextDb()), {
       method: 'POST', body: formData,
     });
     if (!r.ok) throw new Error(await errorText(r));
@@ -848,7 +973,8 @@ async function doImportFile() {
   formData.append('chunk_size', document.getElementById('importChunkSize').value || '500');
   formData.append('overlap', document.getElementById('importOverlap').value || '100');
   try {
-    const r = await fetch(API + '/context/import/file?state_dir=' + encodeURIComponent(sd), {
+    const r = await fetch(API + '/context/import/file?state_dir=' + encodeURIComponent(sd)
+      + '&db=' + encodeURIComponent(getContextDb()), {
       method: 'POST', body: formData,
     });
     if (!r.ok) throw new Error(await errorText(r));
@@ -864,8 +990,10 @@ async function doImportFile() {
 // ── Prefill ───────────────────────────────────────────────────────
 async function prefillContext() {
   try {
-    const data = await api('POST', '/context/prefill', {params: {state_dir: getStateDir()}});
+    const data = await api('POST', '/context/prefill',
+      {params: {state_dir: getStateDir(), db: getContextDb()}});
     toast(`Prefilled ${data.entries_created} entries from segments`);
+    await loadContextDatabases();
     loadContextEntries();
   } catch(e) { toast('Prefill failed: ' + e.message, true); }
 }
@@ -968,6 +1096,7 @@ async function saveProvider() {
 restoreStateDir();
 loadState();
 loadProviders();
+loadContextDatabases();
 </script>
 </body>
 </html>"""

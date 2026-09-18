@@ -7,12 +7,22 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from fastapi.responses import HTMLResponse, Response
+from pydantic import BaseModel, ValidationError
 
-from swatl.context_db.importer import ContextImporter, parse_csv_bilingual, parse_json_bilingual
+from swatl.context_db.importer import (
+    ContextImporter,
+    parse_csv_entries,
+    parse_json_entries,
+)
 from swatl.context_db.model import ContextEntry
-from swatl.context_db.store import ContextEntryStore
+from swatl.context_db.store import (
+    DEFAULT_DB,
+    ContextEntryStore,
+    create_database,
+    delete_database,
+    list_databases,
+)
 from swatl.models import GlossaryEntry, SegmentStatus
 from swatl.state import SegmentStore
 from swatl.web.ui import html_page
@@ -30,24 +40,35 @@ def _read_store(state_dir: str) -> SegmentStore:
     return SegmentStore(_expand(state_dir), create=False)
 
 
-def _read_context_store(state_dir: str) -> ContextEntryStore:
+def _read_context_store(state_dir: str, db: str = DEFAULT_DB) -> ContextEntryStore:
     """A ContextEntryStore that never creates directories (for GET endpoints)."""
-    return ContextEntryStore(_expand(state_dir), create=False)
-
-
-def _parse_json_pairs(content: str) -> list[tuple[str, str]]:
-    """Parse bilingual JSON, reporting malformed input as a 400."""
     try:
-        return parse_json_bilingual(content)
+        return ContextEntryStore(_expand(state_dir), name=db, create=False)
     except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _context_store(state_dir: str, db: str = DEFAULT_DB) -> ContextEntryStore:
+    """A writable ContextEntryStore for a named database."""
+    try:
+        return ContextEntryStore(_expand(state_dir), name=db)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+def _parse_json_entries(content: str) -> list[ContextEntry]:
+    """Parse bilingual JSON (or a full export), reporting bad input as a 400."""
+    try:
+        return parse_json_entries(content)
+    except (ValueError, ValidationError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
 
 
-def _parse_csv_pairs(content: str, delimiter: str) -> list[tuple[str, str]]:
-    """Parse bilingual CSV, reporting malformed input as a 400."""
+def _parse_csv_entries(content: str, delimiter: str) -> list[ContextEntry]:
+    """Parse bilingual CSV (or a full export), reporting bad input as a 400."""
     try:
-        return parse_csv_bilingual(content, delimiter)
-    except csv.Error as e:
+        return parse_csv_entries(content, delimiter)
+    except (csv.Error, ValidationError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
 
 
@@ -342,23 +363,85 @@ async def delete_glossary_term(index: int, state_dir: str):
 
 # ============================================================
 # Context DB CRUD endpoints
+#
+# A state directory can hold several named context databases: "default"
+# (context_db/entries.json) plus any number of named ones. Every endpoint
+# takes the database name as the `db` query parameter.
 # ============================================================
 
 
+class ContextDbReq(BaseModel):
+    name: str
+    copy_from: str | None = None
+
+
+@app.get("/api/context/databases")
+async def list_context_databases(state_dir: str):
+    """List the context databases available in a state directory."""
+    return list_databases(_expand(state_dir))
+
+
+@app.post("/api/context/databases")
+async def create_context_database(state_dir: str, body: ContextDbReq):
+    """Create a context database, optionally copying an existing one."""
+    target = _expand(state_dir)
+    try:
+        create_database(target, body.name, copy_from=body.copy_from)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except FileExistsError as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e)) from e
+    return {"ok": True, "databases": list_databases(target)}
+
+
+@app.delete("/api/context/databases/{name}")
+async def delete_context_database(name: str, state_dir: str):
+    """Delete a named context database (the default one is protected)."""
+    target = _expand(state_dir)
+    try:
+        deleted = delete_database(target, name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Context database '{name}' not found")
+    return {"ok": True, "databases": list_databases(target)}
+
+
+@app.get("/api/context/export")
+async def export_context_database(state_dir: str, db: str = DEFAULT_DB, format: str = "json"):
+    """Download a context database as JSON or CSV."""
+    store = _read_context_store(state_dir, db)
+    if not store.exists():
+        raise HTTPException(status_code=404, detail=f"Context database '{db}' not found")
+    try:
+        payload = store.export(format)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+    filename = f"context-{db}.{format}"
+    return Response(
+        content=payload,
+        media_type="application/json" if format == "json" else "text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/context")
-async def list_context_entries(state_dir: str, entry_type: str | None = None):
-    """List all context entries for a state directory, optionally filtered by type."""
-    store = _read_context_store(state_dir)
+async def list_context_entries(state_dir: str, entry_type: str | None = None, db: str = DEFAULT_DB):
+    """List all context entries in a database, optionally filtered by type."""
+    store = _read_context_store(state_dir, db)
     entries = list(store.iter_entries())
     if entry_type:
         entries = [e for e in entries if e.entry_type == entry_type]
-    return [e.model_dump() for e in entries]
+    return [e.model_dump(mode="json") for e in entries]
 
 
 @app.post("/api/context")
-async def create_context_entry(state_dir: str, entry: ContextEntryReq):
+async def create_context_entry(state_dir: str, entry: ContextEntryReq, db: str = DEFAULT_DB):
     """Create a single context entry."""
-    store = ContextEntryStore(_expand(state_dir))
+    store = _context_store(state_dir, db)
     ctx_entry = ContextEntry(
         source_text=entry.source_text,
         translated_text=entry.translated_text,
@@ -368,7 +451,7 @@ async def create_context_entry(state_dir: str, entry: ContextEntryReq):
         tags=entry.tags,
     )
     store.create(ctx_entry)
-    return {"ok": True, "entry": ctx_entry.model_dump()}
+    return {"ok": True, "entry": ctx_entry.model_dump(mode="json")}
 
 
 @app.patch("/api/context/{entry_id}")
@@ -376,9 +459,10 @@ async def update_context_entry(
     entry_id: str,
     state_dir: str,
     body: ContextEditReq,
+    db: str = DEFAULT_DB,
 ):
     """Edit a context entry (partial update — only supplied fields change)."""
-    store = ContextEntryStore(_expand(state_dir))
+    store = _context_store(state_dir, db)
     result = store.update(entry_id, **body.model_dump(exclude_unset=True))
     if result is None:
         raise HTTPException(status_code=404, detail=f"Context entry {entry_id} not found")
@@ -386,12 +470,9 @@ async def update_context_entry(
 
 
 @app.delete("/api/context/{entry_id}")
-async def delete_context_entry(
-    entry_id: str,
-    state_dir: str,
-):
+async def delete_context_entry(entry_id: str, state_dir: str, db: str = DEFAULT_DB):
     """Delete a context entry."""
-    store = ContextEntryStore(_expand(state_dir))
+    store = _context_store(state_dir, db)
     if not store.delete(entry_id):
         raise HTTPException(status_code=404, detail=f"Context entry {entry_id} not found")
     return {"ok": True}
@@ -402,31 +483,34 @@ async def search_context_entries(
     state_dir: str,
     q: str,
     entry_type: str | None = None,
+    db: str = DEFAULT_DB,
 ):
     """Search context entries by text or tags."""
-    store = _read_context_store(state_dir)
+    store = _read_context_store(state_dir, db)
     results = store.search(q, entry_type=entry_type)
-    return [e.model_dump() for e in results]
+    return [e.model_dump(mode="json") for e in results]
 
 
 @app.get("/api/context/stats")
-async def context_stats(state_dir: str):
+async def context_stats(state_dir: str, db: str = DEFAULT_DB):
     """Get context entry statistics."""
-    store = _read_context_store(state_dir)
-    return store.stats()
+    store = _read_context_store(state_dir, db)
+    stats = store.stats()
+    stats["db"] = db
+    return stats
 
 
 @app.post("/api/context/import/text")
 async def import_text(
     state_dir: str,
-    text: str = Form(...),
+    text: Annotated[str, Form()],
     source_name: Annotated[str, Form()] = "text",
     chunk_size: Annotated[int, Form(ge=10, le=20000)] = 500,
     overlap: Annotated[int, Form(ge=0, le=20000)] = 100,
+    db: str = DEFAULT_DB,
 ):
     """Import raw text as chunked context entries."""
-    store = ContextEntryStore(_expand(state_dir))
-    # Re-chunk and create entries
+    store = _context_store(state_dir, db)
     from swatl.context_db.importer import chunk_text
 
     chunks = chunk_text(text, chunk_size, overlap)
@@ -441,7 +525,7 @@ async def import_text(
         for i, chunk in enumerate(chunks)
     ]
     added = store.create_many(entries)
-    return {"ok": True, "entries_created": added, "chunks_total": len(chunks)}
+    return {"ok": True, "entries_created": added, "chunks_total": len(chunks), "db": store.name}
 
 
 @app.post("/api/context/import/json")
@@ -449,22 +533,16 @@ async def import_json_entries(
     state_dir: str,
     content: Annotated[str, Form()],
     source_name: Annotated[str, Form()] = "import.json",
+    db: str = DEFAULT_DB,
 ):
-    """Import JSON bilingual pairs as context entries."""
-    store = ContextEntryStore(_expand(state_dir))
-    pairs = _parse_json_pairs(content)
-    entries = [
-        ContextEntry(
-            source_text=src,
-            translated_text=tgt if tgt else None,
-            entry_type="prefill",
-            source_file=source_name,
-            tags=["imported", "json"],
-        )
-        for src, tgt in pairs
-    ]
+    """Import JSON entries (a bilingual list or a full database export)."""
+    store = _context_store(state_dir, db)
+    entries = _parse_json_entries(content)
+    for entry in entries:
+        if entry.source_file is None:
+            entry.source_file = source_name
     added = store.create_many(entries)
-    return {"ok": True, "entries_created": added}
+    return {"ok": True, "entries_created": added, "db": store.name}
 
 
 @app.post("/api/context/import/batch")
@@ -473,34 +551,27 @@ async def import_csv_entries(
     content: Annotated[str, Form()],
     source_name: Annotated[str, Form()] = "import.csv",
     delimiter: Annotated[str, Form()] = ",",
+    db: str = DEFAULT_DB,
 ):
-    """Import CSV bilingual pairs as context entries."""
-    store = ContextEntryStore(_expand(state_dir))
-    pairs = _parse_csv_pairs(content, delimiter)
-    entries = [
-        ContextEntry(
-            source_text=src,
-            translated_text=tgt if tgt else None,
-            entry_type="prefill",
-            source_file=source_name,
-            tags=["imported", "csv"],
-        )
-        for src, tgt in pairs
-    ]
+    """Import CSV entries (source, target, entry_type, tags)."""
+    store = _context_store(state_dir, db)
+    entries = _parse_csv_entries(content, delimiter)
+    for entry in entries:
+        if entry.source_file is None:
+            entry.source_file = source_name
     added = store.create_many(entries)
-    return {"ok": True, "entries_created": added}
+    return {"ok": True, "entries_created": added, "db": store.name}
 
 
 @app.post("/api/context/prefill")
-async def prefill_from_segments(state_dir: str):
-    """Embed all translated segments into the Context DB.
+async def prefill_from_segments(state_dir: str, db: str = DEFAULT_DB):
+    """Copy every translated segment into the context database.
 
-    Copies all proofread/translated segments into the context entries store
-    as prefill entries, so they can be curated and edited.
+    The entries can then be curated and edited like any other context entry.
     """
     store = SegmentStore(_expand(state_dir))
     segments = store.load_segments()
-    ctx_store = ContextEntryStore(_expand(state_dir))
+    ctx_store = _context_store(state_dir, db)
     entries = []
     for seg in segments.values():
         if not seg.translated:
@@ -516,47 +587,37 @@ async def prefill_from_segments(state_dir: str):
             )
         )
     added = ctx_store.create_many(entries)
-    return {"ok": True, "entries_created": added, "total_from_segments": len(entries)}
+    return {
+        "ok": True,
+        "entries_created": added,
+        "total_from_segments": len(entries),
+        "db": ctx_store.name,
+    }
 
 
 @app.post("/api/context/import/file")
 async def import_file(
     state_dir: str,
     file: Annotated[UploadFile, File()],
-    chunk_size: Annotated[int, Form()] = 500,
-    overlap: Annotated[int, Form()] = 100,
+    chunk_size: Annotated[int, Form(ge=10, le=20000)] = 500,
+    overlap: Annotated[int, Form(ge=0, le=20000)] = 100,
+    db: str = DEFAULT_DB,
 ):
-    """Import an uploaded file as context entries."""
+    """Import an uploaded JSON, CSV, HTML/XHTML or text file."""
     content = await file.read()
     text = content.decode("utf-8", errors="replace")
     importer = ContextImporter(chunk_size=chunk_size, overlap=overlap)
     fmt = importer.detect_format(text, file.filename)
-    store = ContextEntryStore(_expand(state_dir))
+    store = _context_store(state_dir, db)
 
     if fmt == "json":
-        pairs = _parse_json_pairs(text)
-        entries = [
-            ContextEntry(
-                source_text=src,
-                translated_text=tgt if tgt else None,
-                entry_type="prefill",
-                source_file=file.filename or "file.json",
-                tags=["imported", "json"],
-            )
-            for src, tgt in pairs
-        ]
+        entries = _parse_json_entries(text)
+        for entry in entries:
+            entry.source_file = entry.source_file or file.filename or "file.json"
     elif fmt == "csv":
-        pairs = _parse_csv_pairs(text, ",")
-        entries = [
-            ContextEntry(
-                source_text=src,
-                translated_text=tgt if tgt else None,
-                entry_type="prefill",
-                source_file=file.filename or "file.csv",
-                tags=["imported", "csv"],
-            )
-            for src, tgt in pairs
-        ]
+        entries = _parse_csv_entries(text, ",")
+        for entry in entries:
+            entry.source_file = entry.source_file or file.filename or "file.csv"
     elif fmt in ("html", "xhtml"):
         text_extracted = importer.extract_text_from_html(text)
         chunks = importer.chunk_text(text_extracted, chunk_size, overlap)
@@ -584,7 +645,13 @@ async def import_file(
         ]
 
     added = store.create_many(entries)
-    return {"ok": True, "format": fmt, "entries_created": added, "chunks_total": len(entries)}
+    return {
+        "ok": True,
+        "format": fmt,
+        "entries_created": added,
+        "chunks_total": len(entries),
+        "db": store.name,
+    }
 
 
 # ---- CLI launcher ----

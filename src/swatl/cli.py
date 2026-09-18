@@ -671,6 +671,199 @@ def glossary_add(
     console.print(f"[green]✓ Added '{source}' → '{target}' to {glossary_file}[/green]")
 
 
+context_app = typer.Typer(help="Manage context databases in a state directory.")
+app.add_typer(context_app, name="context")
+
+
+@context_app.command("list")
+def context_list(
+    state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
+) -> None:
+    """List the context databases in a state directory."""
+    from rich.table import Table
+
+    from swatl.context_db.store import list_databases
+
+    databases = list_databases(state)
+    table = Table(title=f"Context databases in {state}")
+    table.add_column("Name", style="bold")
+    table.add_column("Entries", justify="right")
+    table.add_column("File")
+    base = Path(state) / "context_db"
+    for info in databases:
+        filename = "entries.json" if info["name"] == "default" else f"{info['name']}.json"
+        marker = "" if info["exists"] else "  (not created yet)"
+        table.add_row(info["name"], str(info["entries"]), str(base / filename) + marker)
+    console.print(table)
+
+
+@context_app.command("create")
+def context_create(
+    name: str = typer.Argument(..., help="Name of the new database."),
+    state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
+    copy_from: str | None = typer.Option(
+        None, "--copy-from", help="Copy the entries of an existing database."
+    ),
+) -> None:
+    """Create an empty context database (or copy an existing one)."""
+    from swatl.context_db.store import create_database
+
+    try:
+        path = create_database(state, name, copy_from=copy_from)
+    except (ValueError, FileExistsError, FileNotFoundError) as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise SystemExit(1) from e
+    console.print(f"[green]✓ Created context database '{name}'[/green]")
+    console.print(f"  {path}")
+
+
+@context_app.command("delete")
+def context_delete(
+    name: str = typer.Argument(..., help="Name of the database to delete."),
+    state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
+) -> None:
+    """Delete a named context database (the default one is protected)."""
+    from swatl.context_db.store import delete_database
+
+    try:
+        deleted = delete_database(state, name)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise SystemExit(1) from e
+    if not deleted:
+        console.print(f"[red]Error: context database '{name}' not found[/red]")
+        raise SystemExit(1)
+    console.print(f"[green]✓ Deleted context database '{name}'[/green]")
+
+
+@context_app.command("stats")
+def context_stats_cmd(
+    state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
+    db: str = typer.Option("default", "--db", "-d", help="Context database name."),
+) -> None:
+    """Show entry statistics for a context database."""
+    from swatl.context_db.store import ContextEntryStore
+
+    try:
+        store = ContextEntryStore(state, name=db, create=False)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise SystemExit(1) from e
+    stats = store.stats()
+    console.print(f"[bold]Context database '{db}' in {state}[/bold]")
+    console.print(f"  Entries: {stats['total']}")
+    if stats["by_type"]:
+        for entry_type, count in sorted(stats["by_type"].items()):
+            console.print(f"    {entry_type}: {count}")
+    if stats["tags"]:
+        console.print(f"  Tags: {', '.join(stats['tags'][:20])}")
+
+
+@context_app.command("export")
+def context_export(
+    state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
+    db: str = typer.Option("default", "--db", "-d", help="Context database name."),
+    output: str | None = typer.Option(None, "--output", "-o", help="Output file ('-' for stdout)."),
+    fmt: str = typer.Option("json", "--format", "-f", help="Export format: json or csv."),
+) -> None:
+    """Export a context database to JSON or CSV."""
+    from swatl.context_db.store import ContextEntryStore
+
+    if fmt not in ("json", "csv"):
+        console.print(f"[red]Error: unsupported format '{fmt}' (use json or csv)[/red]")
+        raise SystemExit(1)
+
+    try:
+        store = ContextEntryStore(state, name=db, create=False)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise SystemExit(1) from e
+    if not store.exists():
+        console.print(f"[red]Error: context database '{db}' not found in {state}[/red]")
+        raise SystemExit(1)
+
+    payload = store.export(fmt)
+    if output == "-":
+        console.print(payload, markup=False, highlight=False)
+        return
+    destination = Path(output) if output else Path(f"context-{db}.{fmt}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(payload, encoding="utf-8")
+    console.print(f"[green]✓ Exported {store.count()} entries to {destination}[/green]")
+
+
+@context_app.command("import")
+def context_import(
+    source: str = typer.Argument(..., help="File to import (JSON, CSV or plain text)."),
+    state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
+    db: str = typer.Option("default", "--db", "-d", help="Context database name."),
+    chunk_size: int = typer.Option(500, "--chunk-size", help="Chunk size for plain text."),
+    overlap: int = typer.Option(100, "--overlap", help="Chunk overlap for plain text."),
+) -> None:
+    """Import a JSON, CSV or text file into a context database."""
+    from swatl.context_db.importer import (
+        ContextImporter,
+        parse_csv_entries,
+        parse_json_entries,
+    )
+    from swatl.context_db.model import ContextEntry
+    from swatl.context_db.store import ContextEntryStore
+
+    path = Path(source)
+    if not path.exists():
+        console.print(f"[red]Error: file not found: {path}[/red]")
+        raise SystemExit(1)
+    text = path.read_text(encoding="utf-8", errors="replace")
+
+    importer = ContextImporter(chunk_size=chunk_size, overlap=overlap)
+    fmt = importer.detect_format(text, path.name)
+    try:
+        if fmt == "json":
+            entries = parse_json_entries(text)
+        elif fmt == "csv":
+            entries = parse_csv_entries(text)
+        elif fmt in ("html", "xhtml"):
+            extracted = importer.extract_text_from_html(text)
+            chunks = importer.chunk_text(extracted, chunk_size, overlap)
+            entries = [
+                ContextEntry(
+                    source_text=chunk,
+                    entry_type="prefill",
+                    source_file=path.name,
+                    section=f"chunk-{i + 1}",
+                    tags=["imported", "html"],
+                )
+                for i, chunk in enumerate(chunks)
+            ]
+        else:
+            chunks = importer.chunk_text(text, chunk_size, overlap)
+            entries = [
+                ContextEntry(
+                    source_text=chunk,
+                    entry_type="prefill",
+                    source_file=path.name,
+                    section=f"chunk-{i + 1}",
+                    tags=["imported", "text"],
+                )
+                for i, chunk in enumerate(chunks)
+            ]
+    except (ValueError, OSError) as e:
+        console.print(f"[red]Error: could not parse {path.name}: {e}[/red]")
+        raise SystemExit(1) from e
+
+    try:
+        store = ContextEntryStore(state, name=db)
+    except ValueError as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise SystemExit(1) from e
+
+    added = store.create_many(entries)
+    console.print(
+        f"[green]✓ Imported {added} of {len(entries)} {fmt} entries "
+        f"into '{db}' ({store.count()} total)[/green]"
+    )
+
+
 @app.command()
 def web(
     host: str = typer.Option("127.0.0.1", "--host", "-h", help="Bind host."),

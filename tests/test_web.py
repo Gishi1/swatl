@@ -571,3 +571,134 @@ class TestProviderConfigEndpoint:
         assert data["ok"] is True
         assert data["config_path"] == str(target)
         assert target.exists()
+
+
+class TestContextDatabasesAPI:
+    """Named context databases over the HTTP API."""
+
+    def test_list_create_and_isolate(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+
+        listing = client.get("/api/context/databases", params=sd).json()
+        assert [d["name"] for d in listing] == ["default"]
+
+        created = client.post("/api/context/databases", params=sd, json={"name": "santi"})
+        assert created.status_code == 200
+        assert [d["name"] for d in created.json()["databases"]] == ["default", "santi"]
+
+        client.post(
+            "/api/context",
+            params={**sd, "db": "santi"},
+            json={"source_text": "三体", "translated_text": "Three-Body"},
+        )
+        assert len(client.get("/api/context", params=sd).json()) == 0
+        assert len(client.get("/api/context", params={**sd, "db": "santi"}).json()) == 1
+
+    def test_duplicate_name_is_a_conflict(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        client.post("/api/context/databases", params=sd, json={"name": "dup"})
+        again = client.post("/api/context/databases", params=sd, json={"name": "dup"})
+        assert again.status_code == 409
+
+    def test_invalid_name_is_rejected(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        resp = client.post("/api/context/databases", params=sd, json={"name": "../escape"})
+        assert resp.status_code == 400
+        assert not (tmp_path.parent / "escape.json").exists()
+
+        bad = client.get("/api/context", params={**sd, "db": "../escape"})
+        assert bad.status_code == 400
+
+    def test_copy_from(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        client.post("/api/context", params=sd, json={"source_text": "a", "translated_text": "A"})
+        client.post(
+            "/api/context/databases",
+            params=sd,
+            json={"name": "clone", "copy_from": "default"},
+        )
+        assert len(client.get("/api/context", params={**sd, "db": "clone"}).json()) == 1
+
+    def test_delete_database(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        client.post("/api/context/databases", params=sd, json={"name": "temp"})
+        assert client.delete("/api/context/databases/temp", params=sd).status_code == 200
+        assert client.delete("/api/context/databases/temp", params=sd).status_code == 404
+        assert client.delete("/api/context/databases/default", params=sd).status_code == 400
+
+    def test_export_downloads_json_and_csv(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        client.post(
+            "/api/context",
+            params=sd,
+            json={"source_text": "三体", "translated_text": "Three-Body", "tags": ["term"]},
+        )
+
+        js = client.get("/api/context/export", params={**sd, "format": "json"})
+        assert js.status_code == 200
+        assert js.headers["content-disposition"] == 'attachment; filename="context-default.json"'
+        assert js.json()[0]["source_text"] == "三体"
+
+        csv_resp = client.get("/api/context/export", params={**sd, "format": "csv"})
+        assert csv_resp.status_code == 200
+        assert csv_resp.text.splitlines()[0] == "source,target,entry_type,tags"
+
+        bad = client.get("/api/context/export", params={**sd, "format": "xml"})
+        assert bad.status_code == 400
+
+    def test_export_missing_database_is_404(self, tmp_path):
+        client = TestClient(app)
+        resp = client.get("/api/context/export", params={"state_dir": str(tmp_path), "db": "nope"})
+        assert resp.status_code == 404
+
+    def test_export_import_round_trip_through_the_api(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        client.post(
+            "/api/context",
+            params=sd,
+            json={"source_text": "三体", "translated_text": "Three-Body", "entry_type": "manual"},
+        )
+        payload = client.get("/api/context/export", params={**sd, "format": "json"}).text
+
+        client.post("/api/context/databases", params=sd, json={"name": "restored"})
+        imported = client.post(
+            "/api/context/import/json",
+            params={**sd, "db": "restored"},
+            data={"content": payload, "source_name": "backup.json"},
+        )
+        assert imported.status_code == 200
+        assert imported.json()["entries_created"] == 1
+
+        entries = client.get("/api/context", params={**sd, "db": "restored"}).json()
+        assert entries[0]["entry_type"] == "manual"
+        assert entries[0]["translated_text"] == "Three-Body"
+
+    def test_import_text_and_prefill_target_the_selected_db(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        client.post("/api/context/databases", params=sd, json={"name": "notes"})
+
+        imported = client.post(
+            "/api/context/import/text",
+            params={**sd, "db": "notes"},
+            data={"text": "一些文本" * 40, "chunk_size": "50", "overlap": "10"},
+        )
+        assert imported.status_code == 200
+        assert imported.json()["db"] == "notes"
+        assert len(client.get("/api/context", params={**sd, "db": "notes"}).json()) >= 1
+        assert client.get("/api/context", params=sd).json() == []
+
+    def test_stats_report_the_database(self, tmp_path):
+        client = TestClient(app)
+        sd = {"state_dir": str(tmp_path)}
+        client.post("/api/context/databases", params=sd, json={"name": "x"})
+        stats = client.get("/api/context/stats", params={**sd, "db": "x"}).json()
+        assert stats["db"] == "x"
+        assert stats["total"] == 0

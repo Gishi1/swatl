@@ -82,33 +82,83 @@ def extract_text_from_html(content: str) -> str:
     return text
 
 
-def parse_json_bilingual(content: str) -> list[tuple[str, str]]:
-    """Parse JSON content as a list of {source, target} pairs."""
+def parse_json_entries(content: str) -> list[ContextEntry]:
+    """Parse JSON as full context entries, preserving id/type/tags when present.
+
+    Accepts either a swatl database export (objects with ``source_text``) or a
+    plain bilingual list (objects with ``source``/``target``). Importing an
+    exported database is therefore lossless and idempotent: entry ids are kept,
+    and the store skips ids that already exist.
+    """
     import json
 
     data = json.loads(content)
-    if isinstance(data, list):
-        pairs = []
-        for item in data:
-            source = str(item.get("source", item.get("source_text", "")))
-            target = str(item.get("target", item.get("translated", "")))
-            if source:
-                pairs.append((source, target))
-        return pairs
-    return []
+    if not isinstance(data, list):
+        return []
+
+    entries: list[ContextEntry] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        if "source_text" in item:
+            entries.append(ContextEntry(**item))
+            continue
+        source = str(item.get("source", item.get("source_text", "")))
+        if not source:
+            continue
+        target = item.get("target", item.get("translated"))
+        entries.append(
+            ContextEntry(
+                source_text=source,
+                translated_text=str(target) if target else None,
+                entry_type=str(item.get("entry_type", "prefill")),
+                source_file=item.get("source_file"),
+                section=item.get("section"),
+                tags=[str(t) for t in item.get("tags", [])],
+            )
+        )
+    return entries
 
 
-def parse_csv_bilingual(content: str, delimiter: str = ",") -> list[tuple[str, str]]:
-    """Parse CSV content as two-column bilingual data (source, target)."""
+def parse_json_bilingual(content: str) -> list[tuple[str, str]]:
+    """Parse JSON content as a list of (source, target) pairs."""
+    return [(e.source_text, e.translated_text or "") for e in parse_json_entries(content)]
+
+
+def parse_csv_entries(content: str, delimiter: str = ",") -> list[ContextEntry]:
+    """Parse CSV into context entries.
+
+    Columns are ``source, target, entry_type, tags``; only the first two are
+    required and tags are separated by ``|``. A leading header row is skipped.
+    """
     import csv
     from io import StringIO
 
     reader = csv.reader(StringIO(content), delimiter=delimiter)
-    pairs = []
-    for row in reader:
-        if len(row) >= 2 and row[0].strip():
-            pairs.append((row[0].strip(), row[1].strip()))
-    return pairs
+    entries: list[ContextEntry] = []
+    for index, row in enumerate(reader):
+        if not row or not row[0].strip():
+            continue
+        if index == 0 and row[0].strip().lower() in ("source", "source_text"):
+            continue  # header
+        source = row[0].strip()
+        target = row[1].strip() if len(row) > 1 else ""
+        entry_type = row[2].strip() if len(row) > 2 and row[2].strip() else "prefill"
+        tags = [t.strip() for t in row[3].split("|") if t.strip()] if len(row) > 3 else []
+        entries.append(
+            ContextEntry(
+                source_text=source,
+                translated_text=target or None,
+                entry_type=entry_type,
+                tags=tags,
+            )
+        )
+    return entries
+
+
+def parse_csv_bilingual(content: str, delimiter: str = ",") -> list[tuple[str, str]]:
+    """Parse CSV content as two-column bilingual data (source, target)."""
+    return [(e.source_text, e.translated_text or "") for e in parse_csv_entries(content, delimiter)]
 
 
 class ContextImporter:

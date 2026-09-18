@@ -210,3 +210,99 @@ class TestCliPipelineCommands:
         result = runner.invoke(app, ["back-translate", "--state", str(state), "--provider", "mock"])
         assert "mock" in result.output.lower()
         assert "metaclass" not in result.output.lower()
+
+
+class TestContextCommands:
+    """`swatl context` manages named context databases."""
+
+    def _invoke(self, *args):
+        from typer.testing import CliRunner
+
+        return CliRunner().invoke(app, list(args))
+
+    def test_list_create_delete(self, tmp_path):
+        state = str(tmp_path / "state")
+
+        created = self._invoke("context", "create", "santi", "--state", state)
+        assert created.exit_code == 0, created.output
+        assert "santi" in created.output
+
+        listing = self._invoke("context", "list", "--state", state)
+        assert listing.exit_code == 0, listing.output
+        assert "default" in listing.output
+        assert "santi" in listing.output
+
+        deleted = self._invoke("context", "delete", "santi", "--state", state)
+        assert deleted.exit_code == 0, deleted.output
+
+        # The default database is protected.
+        protected = self._invoke("context", "delete", "default", "--state", state)
+        assert protected.exit_code == 1
+        assert "cannot be deleted" in protected.output
+
+    def test_import_export_round_trip(self, tmp_path):
+        state = str(tmp_path / "state")
+        csv_file = tmp_path / "pairs.csv"
+        csv_file.write_text(
+            "source,target,entry_type,tags\n三体,Three-Body,manual,sci-fi|term\n",
+            encoding="utf-8",
+        )
+
+        self._invoke("context", "create", "santi", "--state", state)
+        imported = self._invoke(
+            "context", "import", str(csv_file), "--state", state, "--db", "santi"
+        )
+        assert imported.exit_code == 0, imported.output
+        assert "Imported 1 of 1" in imported.output
+
+        out_file = tmp_path / "dump.json"
+        exported = self._invoke(
+            "context",
+            "export",
+            "--state",
+            state,
+            "--db",
+            "santi",
+            "--format",
+            "json",
+            "-o",
+            str(out_file),
+        )
+        assert exported.exit_code == 0, exported.output
+        assert out_file.exists()
+
+        self._invoke("context", "create", "restored", "--state", state)
+        restored = self._invoke(
+            "context", "import", str(out_file), "--state", state, "--db", "restored"
+        )
+        assert restored.exit_code == 0, restored.output
+        assert "Imported 1 of 1" in restored.output
+
+        stats = self._invoke("context", "stats", "--state", state, "--db", "restored")
+        assert "Entries: 1" in stats.output
+        assert "manual" in stats.output
+
+    def test_export_to_stdout(self, tmp_path):
+        state = str(tmp_path / "state")
+        self._invoke("context", "create", "d", "--state", state)
+        result = self._invoke(
+            "context", "export", "--state", state, "--db", "d", "--format", "csv", "-o", "-"
+        )
+        assert result.exit_code == 0
+        assert "source,target,entry_type,tags" in result.output
+
+    def test_missing_database_errors(self, tmp_path):
+        state = str(tmp_path / "state")
+        result = self._invoke("context", "export", "--state", state, "--db", "ghost")
+        assert result.exit_code == 1
+        assert "not found" in result.output
+
+    def test_bad_name_errors(self, tmp_path):
+        result = self._invoke("context", "create", "../escape", "--state", str(tmp_path / "s"))
+        assert result.exit_code == 1
+        assert "Invalid context database name" in result.output
+
+    def test_import_missing_file_errors(self, tmp_path):
+        result = self._invoke("context", "import", str(tmp_path / "nope.json"), "--state", "s")
+        assert result.exit_code == 1
+        assert "file not found" in result.output

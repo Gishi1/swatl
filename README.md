@@ -27,6 +27,7 @@ is supported, and new pairs are a configuration change rather than a code change
 - [Supported providers](#supported-providers)
 - [Development](#development)
 - [Validating an export](#validating-an-export)
+- [Context databases](#context-databases)
 - [Known limitations](#known-limitations)
 - [Support](#support)
 - [License](#license)
@@ -116,7 +117,7 @@ uv run swatl audit --state ./state --source-lang ja
 | Tab | Purpose |
 |---|---|
 | **Segments** | Server-side search and status filtering, pagination, and a detail panel for editing, accepting, skipping or requeueing a segment |
-| **Context DB** | Curate reusable context entries — add, edit, delete, import text/JSON/CSV/HTML, or prefill from translated segments |
+| **Context DB** | Create, switch, export and delete named context databases; add, edit, delete, import text/JSON/CSV/HTML entries, or prefill from translated segments |
 | **Glossary** | Manage term → translation pairs stored with the book's state |
 | **Settings** | Inspect configured providers, add one, and switch the active state directory |
 
@@ -142,7 +143,9 @@ The GUI is a thin client over a small JSON API. Every endpoint takes
 | `GET` | `/api/stats` | Per-status counts |
 | `PATCH` | `/api/segment/{id}` | Update a translation or status |
 | `POST` | `/api/accept/{id}`, `/api/skip/{id}`, `/api/regenerate/{id}` | Review actions |
-| `GET`/`POST`/`PATCH`/`DELETE` | `/api/context…` | Context DB CRUD, search, stats, import, prefill |
+| `GET`/`POST`/`PATCH`/`DELETE` | `/api/context…` | Context DB CRUD, search, stats, import, prefill (`db` selects the database) |
+| `GET`/`POST`/`DELETE` | `/api/context/databases…` | List, create, copy or delete context databases |
+| `GET` | `/api/context/export` | Download a database as JSON or CSV |
 | `GET`/`POST`/`DELETE` | `/api/glossary…` | Glossary CRUD |
 | `GET`/`POST` | `/api/config` | List or add providers |
 
@@ -160,6 +163,12 @@ The GUI is a thin client over a small JSON API. Every endpoint takes
 | `swatl config <name>` | Show a provider's settings |
 | `swatl glossary-init` | Create a glossary file |
 | `swatl glossary-add <file>` | Add a term to a glossary |
+| `swatl context list` | List the context databases in a state directory |
+| `swatl context create <name>` | Create a context database (`--copy-from` to clone one) |
+| `swatl context delete <name>` | Delete a named context database |
+| `swatl context export` | Export a database to JSON or CSV (`-o -` for stdout) |
+| `swatl context import <file>` | Import JSON, CSV, HTML or text into a database |
+| `swatl context stats` | Entry counts and tags for a database |
 | `swatl web` | Launch the web GUI |
 
 ## How it works
@@ -249,10 +258,37 @@ ebook-convert translated.epub out.txt   # full parse by Calibre
 | Metric | Value |
 |---|---|
 | Source | 39 Python files, ~6.5k lines across 13 modules |
-| Tests | 345, including 8 browser end-to-end tests |
+| Tests | 378, including 9 browser end-to-end tests |
 | Lint / format | `ruff check` and `ruff format --check` clean |
 | Language pairs | zh↔en, ja↔en (extensible) |
-| CLI commands | 11 |
+| CLI commands | 12 |
+
+## Context databases
+
+A state directory holds one or more named **context databases** used to curate
+terminology, style notes and reference material for a book. `default` is the
+historical `context_db/entries.json`; any other name lives beside it as
+`context_db/<name>.json`.
+
+```bash
+# Start a database for a series and copy an existing one into it
+uv run swatl context create santi --state ./state
+uv run swatl context create santi-2 --state ./state --copy-from santi
+
+uv run swatl context list  --state ./state
+uv run swatl context stats --state ./state --db santi
+
+# Round-trip a database through a file (JSON keeps ids, types and tags)
+uv run swatl context export --state ./state --db santi -o santi.json
+uv run swatl context import santi.json --state ./other-book --db santi
+
+# CSV works with spreadsheets; `-o -` writes to stdout
+uv run swatl context export --state ./state --db santi --format csv -o -
+```
+
+In the web GUI the **Context DB** tab has the same controls: a database
+selector plus New, Export and Delete. Deleting is refused for `default`, and
+imports always target the database currently selected.
 
 ## Known limitations
 

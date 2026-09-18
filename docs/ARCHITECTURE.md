@@ -63,8 +63,9 @@ src/swatl/
 └── context_db/              # PHASE 7 — Context DB storage and management
     ├── __init__.py
     ├── model.py             # ContextEntry Pydantic model
-    ├── store.py             # JSON/JSONL store for context entries
-    └── importer.py          # File/URL/text import and chunking logic
+    ├── store.py             # named JSON databases (default + <name>.json),
+    │                        #   CRUD, list/create/delete, JSON/CSV export
+    └── importer.py          # File/URL/text import, chunking, round-trip parsing
 ```
 
 ---
@@ -112,6 +113,7 @@ See `docs/adr/` for full ADRs.
 | Glossary + TM for consistency | Deterministic terminology; cost savings on repeated runs. |
 | ContextDB (Phase 6) | Semantic retrieval for cross-chapter consistency; embedding + FAISS. |
 | GUI Redesign + Context DB Mgmt (Phase 7) | Multi-panel layout, Context DB CRUD, keyboard shortcuts, import. |
+| Named context databases | Several databases per state directory; create (optionally copying another), switch, delete, and export/import as JSON or CSV from the GUI and `swatl context`. |
 
 ---
 

@@ -267,3 +267,61 @@ def test_context_file_upload_import(gui, state_dir, tmp_path):
     assert "Imported 2 entries" in gui.page.locator("#toast").inner_text()
     assert gui.page.locator(".context-card").count() >= 2
     gui.expect_no_errors()
+
+
+def test_context_database_management(gui, state_dir):
+    """Create, switch, isolate and delete context databases from the GUI."""
+    gui.open(str(state_dir))
+    gui.page.click("button[data-tab='context']")
+    gui.page.wait_for_timeout(900)
+
+    assert gui.page.locator("#ctxDb option").count() >= 1  # at least "default"
+    assert gui.page.input_value("#ctxDb") == "default"
+
+    # Add an entry to the default database.
+    gui.page.click("button:has-text('+ Add')")
+    gui.page.wait_for_timeout(300)
+    gui.page.fill("#ctxSource", "默认条目")
+    gui.page.fill("#ctxTarget", "default entry")
+    gui.page.click("#addContextModal button:has-text('Save')")
+    gui.page.wait_for_timeout(1200)
+    default_count = gui.page.locator(".context-card").count()
+    assert default_count >= 1
+
+    # A new, independent database.
+    gui.page.click("button:has-text('New')")
+    gui.page.wait_for_timeout(400)
+    assert gui.page.locator("#newDbModal.open").count() == 1
+    gui.page.fill("#newDbName", "e2e-notes")
+    gui.page.click("#newDbModal button:has-text('Create')")
+    gui.page.wait_for_timeout(1500)
+
+    assert gui.page.input_value("#ctxDb") == "e2e-notes"
+    assert gui.page.locator(".context-card").count() == 0  # empty, not a copy
+
+    gui.page.click("button:has-text('+ Add')")
+    gui.page.wait_for_timeout(300)
+    gui.page.fill("#ctxSource", "笔记")
+    gui.page.fill("#ctxTarget", "note")
+    gui.page.click("#addContextModal button:has-text('Save')")
+    gui.page.wait_for_timeout(1200)
+    assert gui.page.locator(".context-card").count() == 1
+
+    # Switching back shows the untouched default database.
+    gui.page.select_option("#ctxDb", "default")
+    gui.page.wait_for_timeout(1200)
+    assert gui.page.locator(".context-card").count() == default_count
+
+    # Export downloads the selected database.
+    with gui.page.expect_download(timeout=15000) as download:
+        gui.page.click("button:has-text('Export')")
+    assert download.value.suggested_filename == "context-default.json"
+
+    # Clean up the scratch database.
+    gui.page.select_option("#ctxDb", "e2e-notes")
+    gui.page.wait_for_timeout(800)
+    gui.page.click("button:has-text('Delete')")
+    gui.page.wait_for_timeout(1500)
+    assert gui.page.locator("#ctxDb option").count() == 1
+
+    gui.expect_no_errors()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from swatl.context_db.importer import (
     ContextImporter,
     chunk_text,
@@ -326,3 +328,149 @@ def test_chunk_text_clamps_overlap():
     assert len(chunk_text(text, 500, 600)) <= 10
     assert chunk_text("", 500, 100) == []
     assert len(chunk_text(text, 50, 999)) <= 80
+
+
+class TestNamedDatabases:
+    """Multiple named context databases per state directory."""
+
+    def test_default_and_named_databases_are_isolated(self, tmp_path):
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore
+
+        default = ContextEntryStore(tmp_path)
+        default.create(ContextEntry(source_text="默认", translated_text="default"))
+
+        named = ContextEntryStore(tmp_path, name="santi")
+        named.create(ContextEntry(source_text="三体", translated_text="Three-Body"))
+
+        assert default.count() == 1
+        assert named.count() == 1
+        assert default.entries_file != named.entries_file
+        assert ContextEntryStore(tmp_path).count() == 1
+        assert ContextEntryStore(tmp_path, name="santi").count() == 1
+
+    def test_list_databases_reports_counts(self, tmp_path):
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore, list_databases
+
+        ContextEntryStore(tmp_path).create(ContextEntry(source_text="a"))
+        ContextEntryStore(tmp_path, name="second").create(ContextEntry(source_text="b"))
+
+        listing = list_databases(tmp_path)
+        assert [d["name"] for d in listing] == ["default", "second"]
+        assert [d["entries"] for d in listing] == [1, 1]
+        assert all(d["exists"] for d in listing)
+
+    def test_create_empty_and_copy(self, tmp_path):
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore, create_database
+
+        ContextEntryStore(tmp_path).create(ContextEntry(source_text="a"))
+        create_database(tmp_path, "copy", copy_from="default")
+        create_database(tmp_path, "empty")
+
+        assert ContextEntryStore(tmp_path, name="copy").count() == 1
+        assert ContextEntryStore(tmp_path, name="empty").count() == 0
+
+        with pytest.raises(FileExistsError):
+            create_database(tmp_path, "copy")
+
+    def test_delete_protects_default(self, tmp_path):
+        from swatl.context_db.store import create_database, delete_database
+
+        create_database(tmp_path, "temp")
+        assert delete_database(tmp_path, "temp") is True
+        assert delete_database(tmp_path, "temp") is False
+        with pytest.raises(ValueError):
+            delete_database(tmp_path, "default")
+
+    @pytest.mark.parametrize("bad", ["../escape", "a/b", "with space", "", ".", "..", "x" * 65])
+    def test_invalid_names_are_rejected(self, tmp_path, bad):
+        from swatl.context_db.store import ContextEntryStore
+
+        with pytest.raises(ValueError):
+            ContextEntryStore(tmp_path, name=bad)
+
+    def test_traversal_cannot_touch_files_outside_the_state_dir(self, tmp_path):
+        """A hostile database name must never resolve outside context_db/."""
+        from swatl.context_db.store import database_path
+
+        state = tmp_path / "state"
+        with pytest.raises(ValueError):
+            database_path(state, "../outside")
+
+        # A legitimate name stays inside the state directory.
+        resolved = database_path(state, "ok").resolve()
+        assert resolved.parent == (state / "context_db").resolve()
+
+
+class TestContextDatabaseExportImport:
+    """Export produces a file that imports back losslessly."""
+
+    def _populate(self, tmp_path):
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore
+
+        store = ContextEntryStore(tmp_path, name="src")
+        store.create(
+            ContextEntry(
+                source_text="三体",
+                translated_text="Three-Body",
+                entry_type="manual",
+                source_file="glossary",
+                section="s1",
+                tags=["sci-fi", "term"],
+            )
+        )
+        store.create(ContextEntry(source_text="叶文洁", translated_text="Ye Wenjie"))
+        return store
+
+    def test_json_export_round_trips(self, tmp_path):
+        from swatl.context_db.importer import parse_json_entries
+        from swatl.context_db.store import ContextEntryStore, create_database
+
+        store = self._populate(tmp_path)
+        payload = store.export("json")
+
+        create_database(tmp_path, "dst")
+        target = ContextEntryStore(tmp_path, name="dst")
+        assert target.create_many(parse_json_entries(payload)) == 2
+
+        original = {e.id: e.model_dump() for e in store.iter_entries()}
+        imported = {e.id: e.model_dump() for e in target.iter_entries()}
+        assert original == imported
+        # Re-importing is idempotent because ids are preserved.
+        assert target.create_many(parse_json_entries(payload)) == 0
+
+    def test_csv_export_carries_type_and_tags(self, tmp_path):
+        from swatl.context_db.importer import parse_csv_entries
+        from swatl.context_db.store import ContextEntryStore, create_database
+
+        store = self._populate(tmp_path)
+        payload = store.export("csv")
+        assert payload.splitlines()[0] == "source,target,entry_type,tags"
+
+        create_database(tmp_path, "dst")
+        target = ContextEntryStore(tmp_path, name="dst")
+        assert target.create_many(parse_csv_entries(payload)) == 2
+
+        first = next(e for e in target.iter_entries() if e.source_text == "三体")
+        assert first.translated_text == "Three-Body"
+        assert first.entry_type == "manual"
+        assert first.tags == ["sci-fi", "term"]
+
+    def test_unknown_export_format_is_rejected(self, tmp_path):
+        store = self._populate(tmp_path)
+        with pytest.raises(ValueError):
+            store.export("xml")
+
+    def test_plain_bilingual_json_still_imports(self, tmp_path):
+        """The original {source,target} format keeps working."""
+        import json
+
+        from swatl.context_db.importer import parse_json_entries
+
+        entries = parse_json_entries(json.dumps([{"source": "你好", "target": "Hello"}]))
+        assert [e.source_text for e in entries] == ["你好"]
+        assert entries[0].translated_text == "Hello"
+        assert entries[0].entry_type == "prefill"

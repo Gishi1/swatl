@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -13,8 +15,100 @@ from swatl.context_db.model import ContextEntry
 
 logger = logging.getLogger(__name__)
 
-# Default filename for the context entries store.
+# Default filename for the context entries store. Named databases live beside
+# it as "<name>.json" so the default keeps working for existing state dirs.
 ENTRIES_FILE = "entries.json"
+DEFAULT_DB = "default"
+DB_FILE_SUFFIX = ".json"
+
+# Database names become file names, so they are deliberately restrictive.
+_DB_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+
+
+def validate_db_name(name: str) -> str:
+    """Return *name* if it is a safe database name, else raise ``ValueError``."""
+    if name == DEFAULT_DB:
+        return name
+    if not _DB_NAME_RE.fullmatch(name or ""):
+        raise ValueError(
+            f"Invalid context database name {name!r}: use letters, digits, '.', '_' or "
+            "'-' (max 64 characters)"
+        )
+    if name.endswith(DB_FILE_SUFFIX) or ".." in name:
+        raise ValueError(f"Invalid context database name {name!r}")
+    return name
+
+
+def context_db_dir(state_dir: str | Path) -> Path:
+    """Directory holding the context databases for a state directory."""
+    return Path(state_dir) / "context_db"
+
+
+def database_path(state_dir: str | Path, name: str = DEFAULT_DB) -> Path:
+    """Path of a named context database file."""
+    validate_db_name(name)
+    if name == DEFAULT_DB:
+        return context_db_dir(state_dir) / ENTRIES_FILE
+    return context_db_dir(state_dir) / f"{name}{DB_FILE_SUFFIX}"
+
+
+def list_databases(state_dir: str | Path) -> list[dict]:
+    """Describe every context database in *state_dir*.
+
+    Returns a list of ``{"name", "entries", "exists"}`` dicts, default first
+    and the rest alphabetically.
+    """
+    directory = context_db_dir(state_dir)
+    names: list[str] = []
+    if directory.is_dir():
+        for path in sorted(directory.iterdir()):
+            if path.name == ENTRIES_FILE:
+                names.append(DEFAULT_DB)
+            elif path.suffix == DB_FILE_SUFFIX and _DB_NAME_RE.fullmatch(path.stem):
+                names.append(path.stem)
+
+    if DEFAULT_DB not in names:
+        names.append(DEFAULT_DB)
+
+    ordered = [DEFAULT_DB] + sorted(n for n in names if n != DEFAULT_DB)
+    return [
+        {
+            "name": name,
+            "entries": ContextEntryStore(state_dir, name=name, create=False).count(),
+            "exists": database_path(state_dir, name).exists(),
+        }
+        for name in ordered
+    ]
+
+
+def create_database(state_dir: str | Path, name: str, copy_from: str | None = None) -> Path:
+    """Create an empty (or copied) context database and return its path."""
+    target = database_path(state_dir, name)
+    if target.exists():
+        raise FileExistsError(f"Context database '{name}' already exists")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if copy_from:
+        source = database_path(state_dir, copy_from)
+        if not source.exists():
+            raise FileNotFoundError(f"Context database '{copy_from}' not found")
+        shutil.copyfile(source, target)
+    else:
+        target.write_text("[]", encoding="utf-8")
+    logger.debug("Created context database '%s'", name)
+    return target
+
+
+def delete_database(state_dir: str | Path, name: str) -> bool:
+    """Delete a named context database. The default database is protected."""
+    if name == DEFAULT_DB:
+        raise ValueError("The default context database cannot be deleted")
+    target = database_path(state_dir, name)
+    if not target.exists():
+        return False
+    target.unlink()
+    logger.debug("Deleted context database '%s'", name)
+    return True
 
 
 def _is_nullable(field) -> bool:
@@ -23,17 +117,22 @@ def _is_nullable(field) -> bool:
 
 
 class ContextEntryStore:
-    """Persists context entries to a JSON file with CRUD operations."""
+    """Persists context entries to a JSON file with CRUD operations.
 
-    def __init__(self, state_dir: str | Path, create: bool = True) -> None:
+    Each state directory can hold several databases: ``default`` (the
+    historical ``context_db/entries.json``) plus any number of named ones.
+    """
+
+    def __init__(self, state_dir: str | Path, name: str = DEFAULT_DB, create: bool = True) -> None:
         """Open the context store.
 
         ``create=False`` is for read-only callers: it never writes to disk, so
         listing entries in a non-existent state directory is side-effect free.
         """
         self.state_dir = Path(state_dir)
+        self.name = validate_db_name(name)
         self._create = create
-        self.entries_file = self.state_dir / "context_db" / ENTRIES_FILE
+        self.entries_file = database_path(self.state_dir, self.name)
 
     def exists(self) -> bool:
         """Whether the backing entries file exists."""
@@ -157,6 +256,48 @@ class ContextEntryStore:
         with open(self.entries_file, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         return added
+
+    # ── Import / export ─────────────────────────────────────────────────
+
+    CSV_COLUMNS = ("source", "target", "entry_type", "tags")
+
+    def export_json(self, indent: int = 2) -> str:
+        """Serialise the whole database as JSON (round-trips via import)."""
+        return json.dumps(
+            [e.model_dump() for e in self.iter_entries()],
+            ensure_ascii=False,
+            indent=indent,
+        )
+
+    def export_csv(self) -> str:
+        """Serialise the database as CSV with a header row.
+
+        Tags are joined with ``|`` because the field is a list.
+        """
+        import csv
+        from io import StringIO
+
+        buffer = StringIO()
+        writer = csv.writer(buffer)
+        writer.writerow(self.CSV_COLUMNS)
+        for entry in self.iter_entries():
+            writer.writerow(
+                [
+                    entry.source_text,
+                    entry.translated_text or "",
+                    entry.entry_type,
+                    "|".join(entry.tags),
+                ]
+            )
+        return buffer.getvalue()
+
+    def export(self, fmt: str = "json") -> str:
+        """Serialise the database in *fmt* (``json`` or ``csv``)."""
+        if fmt == "json":
+            return self.export_json()
+        if fmt == "csv":
+            return self.export_csv()
+        raise ValueError(f"Unsupported export format {fmt!r}: use 'json' or 'csv'")
 
     # ── Query / Filter ──────────────────────────────────────────────────
 
