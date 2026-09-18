@@ -227,6 +227,7 @@ sent and nothing has to be exported. See
 [`config/providers.example.toml`](config/providers.example.toml).
 
 ```toml
+# Any OpenAI-compatible gateway works; point base_url at wherever it runs.
 [omniroute]
 type = "openai-compatible"
 base_url = "http://gateway-host:20128/v1"
