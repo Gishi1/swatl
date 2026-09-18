@@ -5,6 +5,7 @@
 [![CI](https://github.com/Gishi1/swatl/actions/workflows/ci.yml/badge.svg)](https://github.com/Gishi1/swatl/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-ff5e5b?logo=ko-fi&logoColor=white)](https://ko-fi.com/gishi)
 
 swatl reads an EPUB, extracts its translatable text, translates it with a
 pluggable LLM backend, runs a proofreading pass, audits the result, and writes a
@@ -27,6 +28,7 @@ is supported, and new pairs are a configuration change rather than a code change
 - [Development](#development)
 - [Validating an export](#validating-an-export)
 - [Known limitations](#known-limitations)
+- [Support](#support)
 - [License](#license)
 
 ## Features
@@ -266,6 +268,14 @@ Spine documents, the EPUB3 navigation document, and `<head><title>` elements.
 Within a document, text is handled per text node: an element's own text, the
 text of common inline elements (`em`, `strong`, `a`, `span`, `b`, `i`, `sup`, …),
 and the text that follows them. Everything else is copied through unchanged.
+
+## Support
+
+swatl is built and maintained in my own time and is free to use under the MIT
+licence. If it saved you some work, you can buy me a coffee — it is appreciated
+and it funds the model credits I use to test new language pairs.
+
+[![Buy me a coffee at ko-fi.com](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/gishi)
 
 ## License
 

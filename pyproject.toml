@@ -55,6 +55,12 @@ e2e = [
 [project.scripts]
 swatl = "swatl.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/Gishi1/swatl"
+Repository = "https://github.com/Gishi1/swatl"
+Issues = "https://github.com/Gishi1/swatl/issues"
+Funding = "https://ko-fi.com/gishi"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
