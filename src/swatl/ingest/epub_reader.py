@@ -92,7 +92,11 @@ def _find_file(directory: Path, pattern: str) -> Path | None:
 def _parse_opf(extract_dir: Path) -> EpubInfo:
     """Parse META-INF/container.xml → content.opf → spine + metadata."""
     # Step 1: Find container.xml
-    container_path = _find_file(extract_dir, "container.xml")
+    # The specification fixes this location; only fall back to a search when it
+    # is missing, so a stray nested container.xml cannot shadow the real one.
+    container_path = extract_dir / "META-INF" / "container.xml"
+    if not container_path.is_file():
+        container_path = _find_file(extract_dir, "container.xml")
     if not container_path:
         raise ValueError("No META-INF/container.xml found in EPUB")
 

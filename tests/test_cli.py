@@ -398,3 +398,33 @@ class TestSummaryReporting:
         assert "Failed:" in result.output
         failed_line = next(line for line in result.output.splitlines() if "Failed:" in line)
         assert "Failed:     0" not in failed_line, failed_line
+
+
+class TestInspectScratchDirectory:
+    """`inspect` must not leave an unpacked copy of the book behind."""
+
+    def test_extracts_into_a_temporary_directory(self, tmp_path, monkeypatch):
+        import tempfile
+
+        from typer.testing import CliRunner
+
+        from swatl import ingest
+
+        seen = {}
+        real_extract = ingest.extract_epub
+
+        def recording_extract(epub_path, output_dir=None, *args, **kwargs):
+            seen["output_dir"] = output_dir
+            return real_extract(epub_path, output_dir=output_dir, *args, **kwargs)
+
+        monkeypatch.setattr(ingest, "extract_epub", recording_extract)
+
+        book = create_fixture_epub(tmp_path / "book.epub")
+        result = CliRunner().invoke(app, ["inspect", str(book)])
+        assert result.exit_code == 0, result.output
+
+        used = seen.get("output_dir")
+        assert used is not None, "inspect relied on the library's default scratch dir"
+        # The scratch directory is removed on the way out.
+        assert not Path(used).exists()
+        assert tempfile.gettempdir() in str(used)

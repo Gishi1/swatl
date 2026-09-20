@@ -210,21 +210,27 @@ def inspect(
     glossary: str | None = typer.Option(None, "--glossary", "-g", help="Path to glossary TOML."),
 ) -> None:
     """Inspect an EPUB file: show metadata, segment count, and cost estimates."""
+    import tempfile
+
     from swatl.ingest import extract_epub, extract_segments_from_epub
 
-    try:
-        info, epub_dir = extract_epub(epub)
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise SystemExit(1) from e
+    # Extract into a temporary directory: `inspect` only needs the segments, and
+    # the default scratch directory was never cleaned up, so every inspection
+    # left a full unpacked copy of the book behind.
+    with tempfile.TemporaryDirectory(prefix="swatl-inspect-") as scratch:
+        try:
+            info, epub_dir = extract_epub(epub, output_dir=scratch)
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            raise SystemExit(1) from e
 
-    segments, doc_count = extract_segments_from_epub(
-        epub_dir,
-        info.spine_items,
-        info.mime_types,
-        info.language,
-        extra_docs=info.nav_items + info.ncx_items,
-    )
+        segments, doc_count = extract_segments_from_epub(
+            epub_dir,
+            info.spine_items,
+            info.mime_types,
+            info.language,
+            extra_docs=info.nav_items + info.ncx_items,
+        )
 
     # Optional glossary: report how many of its terms this book actually uses,
     # so a wrong or stale glossary file is visible before a translation run.

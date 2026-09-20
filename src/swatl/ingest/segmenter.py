@@ -6,6 +6,7 @@ import logging
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from lxml import html
 
@@ -366,16 +367,33 @@ def extract_segments_from_doc(
 
 
 def _resolve_doc(epub_dir: Path, href: str) -> Path | None:
-    """Resolve a manifest/spine href to an existing file inside the EPUB."""
-    candidate = epub_dir / href
-    if candidate.exists():
-        return candidate
-    if not href.endswith(".xhtml"):
-        candidate = epub_dir / f"{href}.xhtml"
+    """Resolve a manifest/spine href to an existing file inside the EPUB.
+
+    Hrefs are URIs: they may be percent-encoded (``%20`` for a space) and may
+    carry a fragment (``ch01.xhtml#section``). Comparing them with the
+    filesystem path directly meant such a document resolved to nothing and was
+    skipped, leaving that chapter in the source language.
+    """
+    href = href.split("#", 1)[0]
+    if not href:
+        return None
+    candidates = [href]
+    decoded = unquote(href)
+    if decoded != href:
+        candidates.append(decoded)
+
+    for raw in candidates:
+        candidate = epub_dir / raw
         if candidate.exists():
             return candidate
-    candidate = epub_dir / f"{href}.html"
-    return candidate if candidate.exists() else None
+
+    for raw in candidates:
+        if not raw.lower().endswith((".xhtml", ".html", ".htm")):
+            for suffix in (".xhtml", ".html"):
+                candidate = epub_dir / f"{raw}{suffix}"
+                if candidate.exists():
+                    return candidate
+    return None
 
 
 def extract_segments_from_epub(

@@ -514,3 +514,86 @@ class TestEpub2NcxSegmentation:
 
         anchors = [s.anchor for s in segments if s.tag == "p"]
         assert anchors == ["./p[1]", "./p[2]"]
+
+
+class TestHrefResolution:
+    """Manifest hrefs are URIs, not filesystem paths."""
+
+    @staticmethod
+    def _dir(tmp_path):
+        d = tmp_path / "book"
+        d.mkdir(exist_ok=True)
+        (d / "ch 01.xhtml").write_text("<html><body><p>文字</p></body></html>", encoding="utf-8")
+        (d / "plain.xhtml").write_text("<html><body><p>文字</p></body></html>", encoding="utf-8")
+        return d
+
+    def test_percent_encoded_href_resolves(self, tmp_path):
+        """A space encoded as %20 must find the file with a literal space."""
+        from swatl.ingest.segmenter import _resolve_doc
+
+        assert _resolve_doc(self._dir(tmp_path), "ch%2001.xhtml") is not None
+
+    def test_fragment_is_stripped(self, tmp_path):
+        """A spine href may point at a fragment inside the document."""
+        from swatl.ingest.segmenter import _resolve_doc
+
+        resolved = _resolve_doc(self._dir(tmp_path), "plain.xhtml#section-2")
+        assert resolved is not None and resolved.name == "plain.xhtml"
+
+    def test_extension_is_added_when_missing(self, tmp_path):
+        from swatl.ingest.segmenter import _resolve_doc
+
+        resolved = _resolve_doc(self._dir(tmp_path), "plain")
+        assert resolved is not None and resolved.name == "plain.xhtml"
+
+    def test_missing_document_returns_none(self, tmp_path):
+        from swatl.ingest.segmenter import _resolve_doc
+
+        assert _resolve_doc(self._dir(tmp_path), "nope.xhtml") is None
+        assert _resolve_doc(self._dir(tmp_path), "#fragment-only") is None
+
+
+class TestContainerLookup:
+    """The package document comes from META-INF/container.xml."""
+
+    def test_nested_container_does_not_shadow_the_real_one(self, tmp_path):
+        """A stray container.xml must not be picked over the specified location."""
+        import zipfile
+
+        from swatl.ingest import extract_epub
+
+        def opf(title: str) -> str:
+            return (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<package xmlns="http://www.idpf.org/2007/opf" version="2.0">'
+                '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                f"<dc:title>{title}</dc:title><dc:language>zh</dc:language>"
+                "</metadata><manifest>"
+                '<item id="c" href="ch.xhtml" media-type="application/xhtml+xml"/>'
+                '</manifest><spine><itemref idref="c"/></spine></package>'
+            )
+
+        book = tmp_path / "nested.epub"
+        with zipfile.ZipFile(book, "w") as zf:
+            zf.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+            zf.writestr(
+                "META-INF/container.xml",
+                '<?xml version="1.0"?><container version="1.0" '
+                'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+                '<rootfile full-path="real.opf" media-type="application/oebps-package+xml"/>'
+                "</rootfiles></container>",
+            )
+            # A decoy in a nested directory, found first by a recursive search.
+            zf.writestr(
+                "aaa/container.xml",
+                '<?xml version="1.0"?><container version="1.0" '
+                'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+                '<rootfile full-path="decoy.opf" media-type="application/oebps-package+xml"/>'
+                "</rootfiles></container>",
+            )
+            zf.writestr("real.opf", opf("真实的标题"))
+            zf.writestr("decoy.opf", opf("DECOY"))
+            zf.writestr("ch.xhtml", "<html><body><p>文字</p></body></html>")
+
+        info, _epub_dir = extract_epub(book, output_dir=tmp_path / "out")
+        assert info.title == "真实的标题"
