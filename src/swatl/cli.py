@@ -229,7 +229,7 @@ def inspect(
             info.spine_items,
             info.mime_types,
             info.language,
-            extra_docs=info.nav_items + info.ncx_items,
+            extra_docs=info.nav_items + info.ncx_items + info.other_content_items,
         )
 
     # Optional glossary: report how many of its terms this book actually uses,
@@ -357,7 +357,7 @@ def translate(
         info.spine_items,
         info.mime_types,
         info.language,
-        extra_docs=info.nav_items + info.ncx_items,
+        extra_docs=info.nav_items + info.ncx_items + info.other_content_items,
     )
     console.print(f"  {len(segments)} segments from {doc_count} documents")
 

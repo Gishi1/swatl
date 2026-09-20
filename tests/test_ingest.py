@@ -699,3 +699,59 @@ class TestCdataSections:
 
         assert "[CDATA[" not in content
         assert "char" in content  # the mock provider's rendering of CJK
+
+
+class TestNonSpineDocuments:
+    """Every XHTML document in the manifest is translated, spine or not.
+
+    A hybrid EPUB2/3 book ships a nav.xhtml that is neither in the spine nor
+    marked properties="nav". Its labels are what a reader lists as the table of
+    contents, but they used to be skipped, leaving Chinese text in an otherwise
+    English book.
+    """
+
+    def test_unmarked_nav_document_is_collected(self, fixture_epub):
+        from swatl.ingest import extract_epub
+
+        info, _epub_dir = extract_epub(fixture_epub)
+
+        assert "nav.xhtml" in info.other_content_items
+        assert "nav.xhtml" not in info.spine_items
+        assert "nav.xhtml" not in info.nav_items  # it carries no properties="nav"
+
+    def test_non_spine_document_is_segmented(self, fixture_epub):
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+
+        info, epub_dir = extract_epub(fixture_epub)
+        segments, _docs = extract_segments_from_epub(
+            epub_dir,
+            info.spine_items,
+            info.mime_types,
+            info.language,
+            extra_docs=info.nav_items + info.ncx_items + info.other_content_items,
+        )
+
+        nav_texts = [s.source_text for s in segments if s.doc == "nav.xhtml"]
+        assert nav_texts, "the nav document produced no segments"
+        assert "第一章：三体世界" in nav_texts
+
+    def test_every_manifest_document_is_covered(self, fixture_epub):
+        """No XHTML document in the manifest should be left untranslated."""
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+
+        info, epub_dir = extract_epub(fixture_epub)
+        segments, _docs = extract_segments_from_epub(
+            epub_dir,
+            info.spine_items,
+            info.mime_types,
+            info.language,
+            extra_docs=info.nav_items + info.ncx_items + info.other_content_items,
+        )
+
+        covered = {s.doc for s in segments}
+        xhtml_in_manifest = {
+            href
+            for href, media in info.mime_types.items()
+            if not href.startswith("id:") and ("xhtml" in media or href.endswith(".xhtml"))
+        }
+        assert xhtml_in_manifest <= covered, xhtml_in_manifest - covered

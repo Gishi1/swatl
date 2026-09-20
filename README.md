@@ -464,8 +464,11 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
 
 ### What gets translated
 
-Spine documents, the EPUB3 navigation document, the EPUB2 NCX table of contents
-(`toc.ncx`, including `<docTitle>`), and `<head><title>` elements.
+Spine documents, every other XHTML document in the manifest (the EPUB3
+navigation document, a hybrid book's unmarked `nav.xhtml`, cover and
+supplementary pages), the EPUB2 NCX table of contents (`toc.ncx`, including
+`<docTitle>`), and `<head><title>` elements. In short: every XHTML document the
+package declares is translated, so no Chinese text is left behind.
 Within a document, text is handled per text node: an element's own text and the
 text that follows any element (so `<p>一行<br/>二行</p>` yields both halves).
 Text inside `script`, `style` and `svg` subtrees, and the content of images,

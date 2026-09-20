@@ -35,6 +35,10 @@ class EpubInfo:
     mime_types: dict[str, str]  # path → media_type from manifest
     nav_items: list[str]  # EPUB3 navigation document(s), not part of the spine
     ncx_items: list[str]  # EPUB2 NCX table(s) of contents, also outside the spine
+    # XHTML documents in the manifest that are not in the spine: navigation,
+    # cover and supplementary pages. Readers can reach them through links, so
+    # they are translated too.
+    other_content_items: list[str]
 
     def __init__(
         self,
@@ -46,6 +50,7 @@ class EpubInfo:
         mime_types: dict[str, str],
         nav_items: list[str] | None = None,
         ncx_items: list[str] | None = None,
+        other_content_items: list[str] | None = None,
     ):
         self.title = title
         self.author = author
@@ -55,6 +60,7 @@ class EpubInfo:
         self.mime_types = mime_types
         self.nav_items = nav_items or []
         self.ncx_items = ncx_items or []
+        self.other_content_items = other_content_items or []
 
 
 def extract_epub(
@@ -181,6 +187,7 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
     manifest: dict[str, str] = {}
     nav_items: list[str] = []
     ncx_items: list[str] = []
+    content_items: list[str] = []
     manifest_elem = root.find(_q("manifest"))
     if manifest_elem is not None:
         for item in manifest_elem.findall(_q("item")):
@@ -198,6 +205,8 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
                 # need translating just as much as an EPUB3 nav document.
                 if "dtbncx" in media_type or href.lower().endswith(".ncx"):
                     ncx_items.append(href)
+                elif "xhtml" in media_type or href.lower().endswith((".xhtml", ".html", ".htm")):
+                    content_items.append(href)
 
     # ── Spine ──
     spine_items: list[str] = []
@@ -234,9 +243,13 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
 
     epub_version = _detect_version(root)
 
-    # A navigation document that is also in the spine is already segmented.
+    # Anything the spine already covers is segmented there; everything else is
+    # handled as an extra document. A hybrid EPUB2/3 book, for instance, ships a
+    # nav.xhtml that is neither in the spine nor marked properties="nav" — its
+    # labels are what a reader shows in the contents list.
     nav_items = [href for href in nav_items if href not in spine_items]
     ncx_items = [href for href in ncx_items if href not in spine_items]
+    other_content_items = [href for href in content_items if href not in spine_items]
 
     return EpubInfo(
         title=title,
@@ -247,6 +260,7 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
         mime_types=manifest,
         nav_items=nav_items,
         ncx_items=ncx_items,
+        other_content_items=other_content_items,
     )
 
 
