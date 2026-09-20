@@ -101,6 +101,9 @@ verify an installation end-to-end.
 ```bash
 # Bilingual export (source and target side by side)
 uv run swatl export --state ./state --bilingual -o bilingual.epub
+# The exported book *is* the bilingual edition: each paragraph is followed by
+# its translation, in the original reading order. Export without --bilingual for
+# the monolingual translation.
 
 # Reuse translations across runs
 uv run swatl translate book.epub --translation-memory ./tm.json --state ./state

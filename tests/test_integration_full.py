@@ -82,13 +82,18 @@ class TestFullFeatureIntegration:
         )
         assert result.exists()
 
-        # Verify bilingual output
+        # Verify the side-by-side edition: source and target in the same
+        # documents, at the hrefs the manifest already declares.
         import zipfile
 
         with zipfile.ZipFile(result) as zf:
             names = zf.namelist()
-            bdocs = [n for n in names if n.startswith("bilingual/")]
-            assert len(bdocs) > 0
+            assert not [n for n in names if n.startswith("bilingual/")]
+            assert any(
+                "swatl-bilingual" in zf.read(n).decode("utf-8")
+                for n in names
+                if n.endswith(".xhtml")
+            )
 
     def test_back_translation_report_format(self):
         """Back-translation report has expected structure."""

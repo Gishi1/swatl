@@ -320,3 +320,99 @@ class TestInlineTailWriteback:
         assert not any("\u4e00" <= c <= "\u9fff" for c in result)
         # The inline element survives.
         assert lhtml.fromstring(result.encode("utf-8")).find(".//em") is not None
+
+
+class TestBilingualExport:
+    """`--bilingual` must produce a valid, genuinely bilingual copy.
+
+    The copy previously held the *translation* in both halves, replaced the
+    document <title> with a wrapper <div> inside <head>, emitted two </body>
+    tags, dropped the stylesheet, and raised XPathEvalError on every tail
+    segment (silently, since the failure was swallowed).
+    """
+
+    @staticmethod
+    def _bilingual_export(fixture_epub, tmp_path):
+        import asyncio
+
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+        from swatl.providers.mock import MockProvider
+        from swatl.translate.translator import Translator
+        from swatl.writeback.writer import writeback_segments
+
+        info, epub_dir = extract_epub(fixture_epub)
+        segments, _ = extract_segments_from_epub(
+            epub_dir,
+            info.spine_items,
+            info.mime_types,
+            info.language,
+            extra_docs=info.nav_items + info.ncx_items,
+        )
+        segments = asyncio.run(
+            Translator(MockProvider(name="mock"), "zh", "en").translate_all(segments)
+        )
+        out = writeback_segments(
+            epub_dir, segments, target_lang="en", output_path=tmp_path / "bi.epub", bilingual=True
+        )
+        return zipfile.ZipFile(out)
+
+    def test_copy_is_valid_xml_with_one_body(self, fixture_epub, tmp_path):
+        from lxml import etree
+
+        zf = self._bilingual_export(fixture_epub, tmp_path)
+        raw = zf.read("text/ch01.xhtml")
+        root = etree.fromstring(raw)
+        assert root.tag.endswith("html")
+
+        text = raw.decode()
+        assert text.count("<body") == 1
+        assert text.count("</body>") == 1
+        # No wrapper inside <head>, where a <div> would be invalid.
+        head = text[text.find("<head") : text.find("</head>")]
+        assert "swatl-bilingual" not in head
+        assert "<title>" in head
+
+    def test_source_half_holds_the_original_and_target_the_translation(
+        self, fixture_epub, tmp_path
+    ):
+        import re
+
+        zf = self._bilingual_export(fixture_epub, tmp_path)
+        text = zf.read("text/ch01.xhtml").decode()
+
+        sources = re.findall(r'class="swatl-source"[^>]*>(.*?)</p>', text, re.DOTALL)
+        targets = re.findall(r'class="swatl-target"[^>]*>(.*?)</p>', text, re.DOTALL)
+
+        assert sources and targets
+        assert len(sources) == len(targets)
+        assert any("\u4e00" <= c <= "\u9fff" for s in sources for c in s), (
+            "source half lost the Chinese"
+        )
+        assert not any("\u4e00" <= c <= "\u9fff" for t in targets for c in t)
+        assert sources != targets
+
+    def test_stylesheet_and_language_survive(self, fixture_epub, tmp_path):
+        zf = self._bilingual_export(fixture_epub, tmp_path)
+        text = zf.read("text/ch01.xhtml").decode()
+        assert "style.css" in text
+        assert 'xml:lang="en"' in text
+
+    def test_bilingual_documents_are_the_reading_order(self, fixture_epub, tmp_path):
+        """The side-by-side documents replace the spine content, so readers show them.
+
+        Nothing is written to a parallel directory, because files outside the
+        package manifest are invisible to reading systems.
+        """
+        zf = self._bilingual_export(fixture_epub, tmp_path)
+        names = zf.namelist()
+        assert not [n for n in names if n.startswith("bilingual/")]
+        assert "swatl-bilingual" in zf.read("text/ch01.xhtml").decode()
+        # Other spine documents are bilingual too.
+        assert "swatl-bilingual" in zf.read("text/ch02.xhtml").decode()
+
+    def test_ncx_is_still_translated_normally(self, fixture_epub, tmp_path):
+        """The NCX has labels, not prose: it must not be wrapped in blocks."""
+        zf = self._bilingual_export(fixture_epub, tmp_path)
+        ncx = zf.read("toc.ncx").decode()
+        assert "swatl-bilingual" not in ncx
+        assert "<ncx" in ncx

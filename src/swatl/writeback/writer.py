@@ -38,14 +38,14 @@ def writeback_segments(
     Uses in-place text-node replacement: only modified text content changes;
     all other elements (images, CSS, fonts, scripts) remain byte-identical.
 
-    When ``bilingual`` is True, creates a parallel translated copy of each
-    modified document in a ``bilingual/`` subdirectory within the EPUB,
-    so readers can display source and target side by side.
+    When ``bilingual`` is True, each modified document is rewritten so that
+    every source paragraph is followed by its translation, in place: the
+    exported EPUB reads as a side-by-side edition (run the export without the
+    flag for a monolingual one).
 
     Returns the path to the output EPUB.
     """
     output_path = Path(output_path) if output_path else epub_dir.parent / "translated.epub"
-    bilingual_output_dir: Path | None = None
 
     # Group segments by document
     by_doc: dict[str, list[Segment]] = {}
@@ -62,16 +62,15 @@ def writeback_segments(
             continue
 
         modified_docs.add(doc_path)
-        # A bilingual copy only makes sense for XHTML with paragraphs: an NCX
-        # (or any other XML document) has labels, not parallel prose.
+        # A bilingual edition reads as source + target, so the bilingual
+        # documents replace the spine content at their original paths. Keeping
+        # the original hrefs means the package manifest needs no changes — an
+        # earlier version wrote them to a parallel "bilingual/" directory that
+        # was never declared in the manifest, so readers could not reach them.
+        # Non-XHTML documents (an NCX has labels, not prose) are translated
+        # normally in either mode.
         if bilingual and _is_xhtml(full_path):
-            if bilingual_output_dir is None:
-                bilingual_output_dir = epub_dir / "bilingual"
-                bilingual_output_dir.mkdir(parents=True, exist_ok=True)
-            _write_document(full_path, doc_segments, target_lang)
-            _write_bilingual_doc(
-                full_path, doc_segments, target_lang, bilingual_output_dir, doc_path
-            )
+            _write_bilingual_doc(full_path, doc_segments, target_lang, epub_dir, doc_path)
         else:
             _write_document(full_path, doc_segments, target_lang)
 
@@ -163,8 +162,16 @@ def _write_bilingual_doc(
     bilingual_dir: Path,
     doc_path: str,
 ) -> None:
-    """Create a bilingual copy of the document with translated paragraphs."""
-    from lxml import etree, html
+    """Write one document as a side-by-side version of itself.
+
+    Each translated text node becomes a small block holding the source text and
+    the translation. The source half always comes from the segment rather than
+    from the tree, so the two halves can never end up identical, and the whole
+    document (including its ``<head>``) is preserved. ``bilingual_dir`` plus
+    *doc_path* resolve to the document being replaced; the caller passes the
+    EPUB root and the document's own relative path.
+    """
+    from lxml import html as lxml_html
 
     tree = parse_xhtml(source_path)
     root = tree.getroot()
@@ -172,67 +179,75 @@ def _write_bilingual_doc(
     if body is None:
         body = root
 
-    for seg in segments:
+    def _wrapper(source_text: str, translated: str):
+        wrapper = lxml_html.Element("div")
+        wrapper.set("class", "swatl-bilingual")
+
+        source_p = lxml_html.Element("p")
+        source_p.set("class", "swatl-source")
+        source_p.set("style", "color:#666; margin-bottom:0.2em; font-size:0.9em")
+        source_p.text = source_text
+
+        target_p = lxml_html.Element("p")
+        target_p.set("class", "swatl-target")
+        target_p.set("style", "margin-top:0.2em")
+        target_p.text = translated
+
+        wrapper.append(source_p)
+        wrapper.append(target_p)
+        return wrapper
+
+    # Deepest anchors first, so replacing a parent does not invalidate the
+    # anchors of its children. The caller's list is copied: sorting it in place
+    # used to reorder another function's input.
+    ordered = sorted(segments, key=lambda s: s.anchor.count("/"), reverse=True)
+
+    for seg in ordered:
+        translated = seg.translated or ""
+        if not translated:
+            continue
         try:
-            elements = body.xpath(seg.anchor)
+            is_tail = seg.anchor.endswith(TAIL_MARKER)
+            anchor = seg.anchor[: -len(TAIL_MARKER)] if is_tail else seg.anchor
+            context = root if anchor.startswith("/") else body
+            elements = context.xpath(anchor)
             if not elements:
                 continue
-
             element = elements[0]
-            source_text = element.text or ""
-            translated = seg.translated or ""
+        except Exception as e:  # a malformed anchor must not abort the export
+            logger.warning("Bilingual copy skipped %s: %s", seg.id, e)
+            continue
 
-            # Create a wrapper div
+        try:
+            # Only body content is wrapped: a <title> lives in <head>, where a
+            # <div> would be invalid and would strip the document of its title.
+            if body is not root and body not in set(element.iterancestors()):
+                continue
+
             parent = element.getparent()
-            if parent is None:
-                parent = body
-
-            wrapper = html.Element("div")
-            wrapper.set("style", "margin-bottom:1.5em")
-            wrapper.set("class", "swatl-bilingual")
-
-            # Source paragraph
-            source_p = html.Element("p")
-            source_p.set("style", "color:#666; margin-bottom:0.2em; font-size:0.9em")
-            source_p.set("class", "swatl-source")
-            source_p.text = source_text
-
-            # Translation paragraph
-            trans_p = html.Element("p")
-            trans_p.set("style", "margin-top:0.2em")
-            trans_p.set("class", "swatl-target")
-            trans_p.text = translated
-
-            wrapper.append(source_p)
-            wrapper.append(trans_p)
-
-            # Insert wrapper before original, then remove original
-            idx = list(parent).index(element) if element in list(parent) else len(parent)
-            parent.insert(idx, wrapper)
-            parent.remove(element)
-
+            if is_tail:
+                # A tail is not an element: place the block right after the
+                # element the text follows. It used to raise XPathEvalError on
+                # the unstripped "#tail" anchor and vanish from the copy.
+                if parent is None:
+                    continue
+                parent.insert(
+                    list(parent).index(element) + 1, _wrapper(seg.source_text, translated)
+                )
+            else:
+                if parent is None:
+                    continue
+                parent.insert(list(parent).index(element), _wrapper(seg.source_text, translated))
+                parent.remove(element)
         except Exception as e:
             logger.warning("Failed to write bilingual segment %s: %s", seg.id, e)
 
-    # Write the modified HTML tree as XHTML for the EPUB
     out_path = bilingual_dir / doc_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Use html.tostring to serialize, then wrap with XML declaration
-    xhtml_ns = "http://www.w3.org/1999/xhtml"
-    body_html = tree.getroot().find(".//body")
-    html_content = etree.tostring(
-        body_html if body_html is not None else tree.getroot(),
-        method="html",
-        encoding="UTF-8",
-        doctype='<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">',
-    ).decode("utf-8")
-
-    xhtml_header = f'<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">\n<html xmlns="{xhtml_ns}" xml:lang="zh" lang="zh">\n<head>\n  <meta charset="UTF-8"/>\n</head>\n'
-    xhtml_footer = "\n</body>\n</html>\n"
-
-    with open(out_path, "wb") as f:
-        f.write((xhtml_header + html_content + xhtml_footer).encode("utf-8"))
+    # Serialise the whole document so the original <head> (title, stylesheets)
+    # survives, then set the language attributes on the copy.
+    _serialize_document(tree, root, out_path)
+    _set_lang(out_path, target_lang)
 
 
 def _write_document(path: Path, segments: list[Segment], target_lang: str) -> None:
