@@ -174,3 +174,93 @@ class TestBilingualExport:
         # The source text survives only inside the translation string produced
         # by this test's stand-in provider, never as its own block.
         assert "<h1>第一章" not in content
+
+
+class TestWhitespaceAndRepeatExports:
+    """Two defects found by review, both invisible to the earlier tests."""
+
+    def test_inter_node_whitespace_is_preserved(self, tmp_path):
+        """Stripped text nodes must not run the words together.
+
+        `<p>他说 <em>你好</em> 世界。</p>` used to render as
+        "He saidhelloworld.": the space before `<em>` lives in the paragraph's
+        text node and the one after it in the tail, and both were stripped.
+        """
+        content = _bilingual_body(tmp_path, "<p>他说 <em>你好</em> 世界。</p>")
+
+        # The source copy keeps the original spacing verbatim.
+        assert "他说 <em>你好</em> 世界。" in content
+        # And so does the translated copy, around the inline element.
+        assert "EN(他说) <em" in content
+        assert "</em> EN(世界。)" in content
+        assert "EN(他说)<em" not in content
+        assert "</em>EN(世界。)" not in content
+
+    def test_monolingual_export_preserves_whitespace(self, tmp_path):
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+        from swatl.models import SegmentStatus
+        from swatl.writeback.writer import writeback_segments
+
+        book = _make_epub(tmp_path, "<p>他说 <em>你好</em> 世界。</p>")
+        info, epub_dir = extract_epub(book)
+        segments, _ = extract_segments_from_epub(
+            epub_dir, info.spine_items, info.mime_types, info.language
+        )
+        # Keyed by (tag, part): the <em> carries both its own text and a tail.
+        translations = {
+            ("p", "text"): "He said",
+            ("em", "text"): "hello",
+            ("em", "tail"): "world.",
+        }
+        for seg in segments:
+            seg.translated = translations.get((seg.tag, seg.part), "Title")
+            seg.status = SegmentStatus.TRANSLATED
+
+        out = writeback_segments(
+            epub_dir, segments, target_lang="en", output_path=tmp_path / "mono.epub"
+        )
+        with zipfile.ZipFile(out) as z:
+            content = z.read("ch.xhtml").decode("utf-8")
+
+        assert "He said <em" in content
+        assert "</em> world." in content
+        assert "said<em" not in content
+        assert "</em>world" not in content
+
+    def test_bilingual_source_survives_an_earlier_monolingual_export(self, tmp_path):
+        """A document already written in English must not become its own source.
+
+        Write-back rewrites in place, so an export run before the bilingual one
+        leaves English on disk. The source half is rebuilt from the segment
+        records, which still hold the original text.
+        """
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+        from swatl.models import SegmentStatus
+        from swatl.writeback.writer import writeback_segments
+
+        book = _make_epub(tmp_path, "<p>他说 <em>你好</em> 世界。</p>")
+        info, epub_dir = extract_epub(book)
+        segments, _ = extract_segments_from_epub(
+            epub_dir, info.spine_items, info.mime_types, info.language
+        )
+        translations = {
+            ("p", "text"): "He said",
+            ("em", "text"): "hello",
+            ("em", "tail"): "world.",
+        }
+        for seg in segments:
+            seg.translated = translations.get((seg.tag, seg.part), "Title")
+            seg.status = SegmentStatus.TRANSLATED
+
+        # First a monolingual export, which rewrites the documents in place.
+        writeback_segments(epub_dir, segments, target_lang="en", output_path=tmp_path / "m.epub")
+        # Then the bilingual one, from the same (now translated) directory.
+        out = writeback_segments(
+            epub_dir, segments, target_lang="en", output_path=tmp_path / "b.epub", bilingual=True
+        )
+        with zipfile.ZipFile(out) as z:
+            content = z.read("ch.xhtml").decode("utf-8")
+
+        assert "他说" in content, "the source half lost the original language"
+        assert "He said" in content
+        assert content.count('class="swatl-source"') == 1

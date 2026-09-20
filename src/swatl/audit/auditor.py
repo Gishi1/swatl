@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 
 from swatl.models import Glossary, Segment
@@ -211,15 +212,15 @@ def audit_segments(
         # 5. Numbers that changed between source and translation. Digits carry
         #    meaning that a rewrite silently alters (a date, a quantity, an
         #    equation number), so a difference is worth a look.
-        source_digits = _digit_groups(seg.source_text)
-        if source_digits and _digit_groups(text) != source_digits:
+        source_numbers = sorted(_numbers(seg.source_text))
+        translated_numbers = sorted(_numbers(text))
+        if source_numbers and source_numbers != translated_numbers:
             report.issues.append(
                 AuditIssue(
                     type="number_mismatch",
                     segment_id=seg.id,
                     doc=seg.doc,
-                    detail=f"source has {sorted(source_digits)}, translation has "
-                    f"{sorted(_digit_groups(text))}",
+                    detail=f"source has {source_numbers}, translation has {translated_numbers}",
                     severity="warning",
                 )
             )
@@ -251,9 +252,24 @@ def audit_segments(
     return report
 
 
-def _digit_groups(text: str) -> set[str]:
-    """Distinct runs of digits in *text* (trailing punctuation excluded)."""
-    return set(re.findall(r"\d+", text or ""))
+# A separator between digit groups: 3,500 / 3，500 / 3 500 / 3_500.
+_THOUSANDS_RE = re.compile(r"(?<=\d)[,，_\u2009 ](?=\d{3}(?!\d))")
+
+
+def _numbers(text: str) -> list[str]:
+    """Numbers in *text*, normalised so equivalent notations compare equal.
+
+    Full-width digits are folded to ASCII and thousands separators removed, so
+    "３，５００", "3,500" and "3500" all yield "3500". Decimals are kept — 3.5 and
+    35 are different numbers. A list, not a set, is compared: reordering is not
+    reported, but a duplicated or dropped number is.
+
+    Numbers spelled out in words ("nineteen eighty-seven") and unit conversions
+    ("3.5万元" → "35,000 yuan") still differ, which is why this is a warning.
+    """
+    folded = unicodedata.normalize("NFKC", text or "")
+    folded = _THOUSANDS_RE.sub("", folded)
+    return re.findall(r"\d+(?:\.\d+)?", folded)
 
 
 def _report_duplicate_translations(report: AuditReport, segments: list[Segment]) -> None:
@@ -264,9 +280,14 @@ def _report_duplicate_translations(report: AuditReport, segments: list[Segment])
     almost impossible to spot by reading a single segment. Short strings are
     ignored: "Yes." or "Chapter 1" legitimately repeat.
     """
+    # Only the segments the main loop audits: a pending or failed segment can
+    # still carry an old translation, which would otherwise be reported against
+    # a correctly translated one.
+    audited = [s for s in segments if s.translated is not None and s.status != "pending"]
+
     seen: dict[str, Segment] = {}
     reported: set[str] = set()
-    for seg in segments:
+    for seg in audited:
         text = (seg.translated or "").strip()
         if len(text) < 12:
             continue

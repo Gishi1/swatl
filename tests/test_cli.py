@@ -428,3 +428,120 @@ class TestInspectScratchDirectory:
         # The scratch directory is removed on the way out.
         assert not Path(used).exists()
         assert tempfile.gettempdir() in str(used)
+
+
+class TestBackTranslateMetricFallback:
+    """`--metric semantic` must degrade gracefully, never traceback."""
+
+    @staticmethod
+    def _state(tmp_path):
+        from swatl.models import Segment
+        from swatl.state import SegmentStore
+
+        store = SegmentStore(tmp_path)
+        store.append_many(
+            [
+                Segment(
+                    id="p-0001",
+                    doc="d",
+                    anchor="./p[1]",
+                    tag="p",
+                    source_text="红岸基地",
+                    translated="Red Coast Base",
+                    status="translated",
+                )
+            ]
+        )
+        return tmp_path
+
+    def _run(self, tmp_path, monkeypatch, extra):
+        from typer.testing import CliRunner
+
+        from swatl.quality import back_translation
+        from swatl.quality.back_translation import BackTranslationReport, BackTranslationResult
+
+        seen = {}
+
+        async def fake_sample(segments, **kwargs):
+            seen.update(kwargs)
+            # One successful result: an empty report means "every request
+            # failed" to the command, which then exits non-zero on purpose.
+            result = BackTranslationResult(
+                segment=segments[0],
+                back_translated=segments[0].source_text,
+                similarity_score=1.0,
+                flag="ok",
+            )
+            return BackTranslationReport(
+                segments_tested=1,
+                ok=1,
+                warnings=0,
+                critical=0,
+                results=[result],
+                details=[],
+                metric=kwargs.get("metric", "chrf"),
+            )
+
+        monkeypatch.setattr(back_translation, "back_translate_sample", fake_sample)
+        # A real provider name is required (the command refuses `mock`), and the
+        # API key is stubbed because no request is actually made.
+        from swatl import config as config_module
+
+        monkeypatch.setattr(config_module, "get_api_key", lambda provider: "test-key")
+
+        state = self._state(tmp_path)
+        result = CliRunner().invoke(
+            app,
+            [
+                "back-translate",
+                "--state",
+                str(state),
+                "--provider",
+                "deepseek",
+                "-o",
+                str(tmp_path / "report.json"),
+                *extra,
+            ],
+        )
+        return result, seen
+
+    def test_unknown_backend_is_reported_not_raised(self, tmp_path, monkeypatch):
+        """A typo in --embedding-backend used to raise ValueError."""
+        result, seen = self._run(
+            tmp_path, monkeypatch, ["--metric", "semantic", "--embedding-backend", "ollma"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Semantic scoring unavailable" in result.output
+        assert seen.get("metric") == "chrf"
+        assert seen.get("embedder") is None
+
+    def test_reachable_backend_is_used(self, tmp_path, monkeypatch):
+        """With a working backend the semantic metric is passed through."""
+        result, seen = self._run(tmp_path, monkeypatch, ["--metric", "semantic"])
+
+        assert result.exit_code == 0, result.output
+        assert seen.get("metric") == "semantic"
+        assert seen.get("embedder") is not None
+
+
+class TestTokenUrlEncoding:
+    """A token with URL-significant characters must still work."""
+
+    def test_printed_url_percent_encodes_the_token(self, monkeypatch):
+        from typer.testing import CliRunner
+
+        from swatl import cli
+
+        started = {}
+        monkeypatch.setattr(
+            "swatl.web.run_server",
+            lambda host, port, token=None: started.update({"token": token}),
+            raising=False,
+        )
+        result = CliRunner().invoke(cli.app, ["web", "--token", "AbC+/xy&z"])
+
+        assert result.exit_code == 0, result.output
+        # URLSearchParams in the GUI decodes this back to the original token.
+        assert "AbC%2B%2Fxy%26z" in result.output
+        assert started["token"] == "AbC+/xy&z"

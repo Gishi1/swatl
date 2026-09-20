@@ -450,9 +450,10 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
   from wrong ones well (measured: median 0.62 for real round trips versus 0.02
   for mismatched pairs), but short segments can still score high by coincidence.
   `--metric semantic` embeds both texts and compares them, which separated the
-  same sample perfectly (every faithful round trip scored ≥ 0.78, no mismatched
-  pair above 0.78), at the cost of needing an embedding backend; `--metric
-  levenshtein` is the older edit-distance ratio.
+  same sample cleanly: every faithful round trip scored at least 0.776 and no
+  mismatched pair exceeded 0.778, so the 0.80 threshold admitted no wrong pair,
+  though the weakest faithful one falls in the warning band. It needs an
+  embedding backend; `--metric levenshtein` is the older edit-distance ratio.
 - Context retrieval quality depends on what is installed. With an embedding
   backend (Ollama `bge-m3`, about 1.2 GB, or any OpenAI-compatible embeddings
   endpoint) entries are matched semantically. With no backend, swatl falls back

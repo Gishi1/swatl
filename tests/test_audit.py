@@ -359,3 +359,68 @@ class TestNewAuditChecks:
             ]
         )
         assert "duplicate_translation" in report.summary()
+
+
+class TestNumberNormalisation:
+    """Equivalent notations must compare equal; changed numbers must not."""
+
+    @staticmethod
+    def _seg(source: str, translated: str) -> Segment:
+        return Segment(
+            id="p-0001",
+            doc="doc",
+            anchor="./p[1]",
+            tag="p",
+            source_text=source,
+            translated=translated,
+            status="translated",
+        )
+
+    def _flagged(self, source: str, translated: str) -> bool:
+        report = audit_segments([self._seg(source, translated)])
+        return any(i.type == "number_mismatch" for i in report.issues)
+
+    def test_full_width_digits_are_equivalent(self):
+        assert not self._flagged("第２７号文件", "Document No. 27")
+
+    def test_thousands_separators_are_equivalent(self):
+        assert not self._flagged("共3,500人", "3,500 people")
+        assert not self._flagged("共３，５００人", "3500 people")
+
+    def test_decimal_is_not_confused_with_a_separator(self):
+        assert self._flagged("3.5米", "35 metres")
+
+    def test_duplicated_number_dropped_is_caught(self):
+        """1987，1987 → 1987 loses a number; a set comparison missed it."""
+        assert self._flagged("1987，1987", "1987")
+
+    def test_reordering_is_not_reported(self):
+        assert not self._flagged("1987年和1997年", "In 1997 and 1987.")
+
+
+class TestDuplicateScanScope:
+    """The duplicate check must look only at segments the audit covers."""
+
+    def test_pending_segment_with_stale_text_is_ignored(self):
+        shared = "The same sentence appears in both segments here."
+        pending = Segment(
+            id="p-0001",
+            doc="doc",
+            anchor="./p[1]",
+            tag="p",
+            source_text="红岸基地",
+            translated=shared,
+            status="pending",
+        )
+        translated = Segment(
+            id="p-0002",
+            doc="doc",
+            anchor="./p[2]",
+            tag="p",
+            source_text="叶文洁",
+            translated=shared,
+            status="translated",
+        )
+        report = audit_segments([pending, translated])
+
+        assert [i for i in report.issues if i.type == "duplicate_translation"] == []

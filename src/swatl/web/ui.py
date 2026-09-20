@@ -847,7 +847,8 @@ async function exportContextDb() {
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(objectUrl);
+    // Deferred: revoking synchronously can cancel the download in some browsers.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     toast(`Exported '${db}' as JSON`);
   } catch(e) { toast('Could not export database: ' + e.message, true); }
 }

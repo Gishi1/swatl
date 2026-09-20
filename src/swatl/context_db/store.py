@@ -157,9 +157,12 @@ def _atomic_write_json(path: Path, data: list[dict[str, Any]]) -> None:
         # would destroy the last good copy.
         try:
             backup_is_worth_keeping = isinstance(json.loads(path.read_text(encoding="utf-8")), list)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
+            # JSONDecodeError is a ValueError; UnicodeDecodeError (a corrupt
+            # multi-byte sequence) is not JSONDecodeError, and used to escape
+            # from here and abort every write instead of replacing the file.
             backup_is_worth_keeping = False
-            logger.warning("Not backing up %s: it is not valid JSON", path)
+            logger.warning("Not backing up %s: it is not readable JSON", path)
         if backup_is_worth_keeping:
             try:
                 shutil.copyfile(path, _backup_path(path))
@@ -189,23 +192,27 @@ def _load_json_list(path: Path) -> list[dict[str, Any]]:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
-    except OSError:
-        logger.error("Could not read context database %s", path, exc_info=True)
+    except (OSError, ValueError) as e:
+        # A truncated multi-byte character raises UnicodeDecodeError, which is a
+        # ValueError and not a JSONDecodeError; here it means the same thing.
+        logger.error("Could not read context database %s: %s", path, e)
         return []
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except ValueError as e:
         backup = _backup_path(path)
         if not backup.exists():
             logger.error(
-                "Context database %s is corrupt and has no backup; treating it as empty", path
+                "Context database %s is corrupt (%s) and has no backup; treating it as empty",
+                path,
+                e,
             )
             return []
-        logger.error("Context database %s is corrupt; recovering from %s", path, backup)
+        logger.error("Context database %s is corrupt (%s); recovering from %s", path, e, backup)
         try:
             data = json.loads(backup.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, ValueError):
             logger.error("Backup %s is unusable; treating the database as empty", backup)
             return []
 

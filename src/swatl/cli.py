@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -673,25 +674,47 @@ def export(
     segments = store.load_segments()
     segments_list = list(segments.values())
 
-    epub_dir = Path(run.state_dir) if run.state_dir else Path(state) / "_epub"
-    if not epub_dir.exists():
-        # Try to extract from the source EPUB
-        from swatl.ingest import extract_epub
+    import tempfile
 
-        src_epub = Path(run.epub_path)
-        if src_epub.exists():
-            _, epub_dir = extract_epub(src_epub, output_dir=epub_dir)
-        else:
-            console.print(f"[red]Source EPUB not found: {run.epub_path}[/red]")
-            raise SystemExit(1)
+    from swatl.ingest import extract_epub
 
-    result_path = writeback_segments(
-        epub_dir,
-        segments_list,
-        target_lang=run.pair[-1] if len(run.pair) > 1 else "en",
-        output_path=output,
-        bilingual=bilingual,
-    )
+    src_epub = Path(run.epub_path)
+    previous = Path(run.state_dir) if run.state_dir else Path(state) / "_epub"
+
+    # Write-back rewrites documents in place, so exporting must start from a
+    # pristine extraction. Reusing the directory `translate` left behind made a
+    # second export read the first export's output: a bilingual export after a
+    # monolingual one had no source text left, and a second bilingual run nested
+    # another copy inside the previous pair.
+    if src_epub.exists():
+        scratch = tempfile.mkdtemp(prefix="swatl-export-")
+        try:
+            _, epub_dir = extract_epub(src_epub, output_dir=scratch)
+            result_path = writeback_segments(
+                epub_dir,
+                segments_list,
+                target_lang=run.pair[-1] if len(run.pair) > 1 else "en",
+                output_path=output,
+                bilingual=bilingual,
+            )
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+    elif previous.exists():
+        console.print(
+            f"[yellow]Source EPUB not found ({run.epub_path}); exporting from the "
+            "extraction left by translate. Repeating a bilingual export can "
+            "duplicate text, so re-extract when the EPUB is available.[/yellow]"
+        )
+        result_path = writeback_segments(
+            previous,
+            segments_list,
+            target_lang=run.pair[-1] if len(run.pair) > 1 else "en",
+            output_path=output,
+            bilingual=bilingual,
+        )
+    else:
+        console.print(f"[red]Source EPUB not found: {run.epub_path}[/red]")
+        raise SystemExit(1)
     if bilingual:
         console.print("[green]✓ Bilingual export complete![/green]")
     else:
@@ -748,19 +771,26 @@ def back_translate(
         from swatl.context import resolve_embedding_config
         from swatl.context.embedder import Embedder
 
-        resolution = resolve_embedding_config(
-            backend=embedding_backend,
-            model=embedding_model,
-            base_url=embedding_url,
-            config_file=load_embedding_config(),
-        )
-        if resolution.config is None:
+        try:
+            resolution = resolve_embedding_config(
+                backend=embedding_backend,
+                model=embedding_model,
+                base_url=embedding_url,
+                config_file=load_embedding_config(),
+            )
+        except ValueError as e:
+            # An unknown --embedding-backend is a typo, not a crash.
+            console.print(f"[yellow]Semantic scoring unavailable: {e}. Using chrF.[/yellow]")
+            metric = "chrf"
+            resolution = None
+
+        if resolution is not None and resolution.config is None:
             console.print(
                 f"[yellow]Semantic scoring unavailable: {resolution.reason}. "
                 "Using chrF instead.[/yellow]"
             )
             metric = "chrf"
-        else:
+        elif resolution is not None:
             embedder = Embedder(resolution.config)
             console.print(f"[dim]Similarity: semantic ({embedder.describe()})[/dim]")
 
@@ -1156,8 +1186,12 @@ def web(
     console.print(f"[bold]Starting swatl web GUI at {url}[/bold]")
     if token:
         # The fragment keeps the token out of the server's access log, and the
-        # GUI strips it from the address bar as soon as it has read it.
-        console.print(f"  Open: {url}#token={token}")
+        # GUI strips it from the address bar as soon as it has read it. It is
+        # percent-encoded because the GUI parses the fragment with
+        # URLSearchParams, which would turn "+" into a space and split on "&".
+        from urllib.parse import quote
+
+        console.print(f"  Open: {url}#token={quote(token, safe='')}")
     console.print("  Press Ctrl+C to stop.")
 
     run_server(host, port, token=token or None)

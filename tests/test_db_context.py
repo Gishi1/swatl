@@ -546,3 +546,36 @@ class TestContextDatabaseBackup:
         import json
 
         assert isinstance(json.loads(store.entries_file.read_text(encoding="utf-8")), list)
+
+
+class TestCorruptDatabaseRecovery:
+    """A damaged database must be replaced, not raise on every write."""
+
+    def test_non_utf8_database_does_not_abort_writes(self, tmp_path):
+        """UnicodeDecodeError is not JSONDecodeError; it used to escape."""
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore
+
+        store = ContextEntryStore(str(tmp_path))
+        store.create(ContextEntry(source_text="红岸基地", translated_text="Red Coast Base"))
+        # A truncated multi-byte character: valid bytes were never written.
+        store.entries_file.write_bytes(b'[{"source_text": "\\xff\\xfe"}]')
+
+        store.create(ContextEntry(source_text="叶文洁", translated_text="Ye Wenjie"))
+
+        import json
+
+        data = json.loads(store.entries_file.read_text(encoding="utf-8"))
+        assert isinstance(data, list)
+        assert any(e["source_text"] == "叶文洁" for e in data)
+
+    def test_reading_a_non_utf8_database_is_not_fatal(self, tmp_path):
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore
+
+        store = ContextEntryStore(str(tmp_path))
+        store.create(ContextEntry(source_text="红岸基地", translated_text="Red Coast Base"))
+        store.entries_file.write_bytes(b"\xff\xfe not text at all")
+
+        assert store.count() == 0
+        assert list(store.iter_entries()) == []

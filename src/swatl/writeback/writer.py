@@ -200,22 +200,31 @@ def _write_bilingual_doc(
     """
     from copy import deepcopy
 
-    # Two trees from the same file: one keeps the source text for the copies,
-    # the other receives the translations. Resolving an anchor in both is
-    # reliable because nothing has been inserted or removed yet.
-    source_tree = parse_xhtml(source_path)
-    source_root = source_tree.getroot()
-    source_body = source_tree.find(".//body")
-    if source_body is None:
-        source_body = source_root
-
+    # Parse once and copy: both halves then come from the same tree, and the
+    # source text is put back from the segment records below. Deriving the
+    # source half by re-reading the file was wrong as soon as the document had
+    # been exported before — writeback rewrites documents in place, so a second
+    # export read the first export's output and the "source" half was English.
     tree = parse_xhtml(source_path)
     root = tree.getroot()
     body = tree.find(".//body")
     if body is None:
         body = root
 
+    source_tree = deepcopy(tree)
+    source_root = source_tree.getroot()
+    source_body = source_tree.find(".//body")
+    if source_body is None:
+        source_body = source_root
+
     _apply_translations(root, body, segments, target_lang)
+
+    # Restore the original text in the copy: every segment records its source,
+    # so the source half is correct even when the file on disk already held
+    # translations (an export run twice, or a document reused from an earlier
+    # run). Without this the guarantee that the halves differ was lost.
+    source_segments = [seg.model_copy(update={"translated": seg.source_text}) for seg in segments]
+    _apply_translations(source_root, source_body, source_segments, "")
 
     # Collect the blocks to duplicate first, then insert from the end so that
     # inserting one block cannot shift the positions of the ones still to come.
@@ -364,10 +373,19 @@ def _replace_text(
     implementation did) discarded nested ``<em>``, ``<strong>`` or ``<a>``
     children.
     """
+    # The segmenter stores a stripped source text and providers return stripped
+    # output, so the whitespace that separated this text node from its
+    # neighbours has to be restored: without it `<p>他说 <em>你好</em> 世界。</p>`
+    # renders as "He saidhelloworld." instead of "He said hello world.".
+    original = (element.tail if is_tail else element.text) or ""
+    leading = original[: len(original) - len(original.lstrip())]
+    trailing = original[len(original.rstrip()) :]
+    replacement = f"{leading}{translated}{trailing}" if translated else original
+
     if is_tail:
-        element.tail = translated
+        element.tail = replacement
     else:
-        element.text = translated
+        element.text = replacement
     if target_lang:
         # The Clark notation is required on a namespace-aware XML tree (an NCX),
         # where the literal name "xml:lang" is rejected as invalid; lxml
