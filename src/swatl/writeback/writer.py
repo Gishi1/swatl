@@ -461,7 +461,17 @@ def _create_output_epub(source_dir: Path, output_path: Path) -> None:
 
 
 def _zip_epub(source_dir: Path, target: Path, output_resolved: Path) -> None:
-    """Write the EPUB entries to *target*."""
+    """Write the EPUB entries to *target*.
+
+    Both the final output path and the temporary file being written are skipped
+    while walking: exporting into the extraction directory would otherwise zip
+    the archive into itself.
+    """
+    try:
+        target_resolved = target.resolve()
+    except OSError:  # pragma: no cover - defensive
+        target_resolved = target
+
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         mimetype = source_dir / "mimetype"
         if mimetype.is_file():
@@ -481,6 +491,6 @@ def _zip_epub(source_dir: Path, target: Path, output_resolved: Path) -> None:
                 arcname = str(file_path.relative_to(source_dir))
                 if arcname == "mimetype":
                     continue
-                if file_path.resolve() == output_resolved:
+                if file_path.resolve() in (output_resolved, target_resolved):
                     continue
                 zf.write(file_path, arcname)

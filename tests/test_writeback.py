@@ -320,3 +320,27 @@ class TestInlineTailWriteback:
         assert not any("\u4e00" <= c <= "\u9fff" for c in result)
         # The inline element survives.
         assert lhtml.fromstring(result.encode("utf-8")).find(".//em") is not None
+
+
+class TestOutputArchiveIntegrity:
+    """The archive must never contain itself."""
+
+    def test_export_into_the_source_tree_does_not_zip_the_archive(self, tmp_path):
+        """Writing the output beside the documents must not include the .tmp."""
+        from swatl.writeback.writer import _create_output_epub
+
+        tree = tmp_path / "tree"
+        (tree / "text").mkdir(parents=True)
+        (tree / "mimetype").write_text("application/epub+zip", encoding="utf-8")
+        (tree / "text" / "ch.xhtml").write_text("<html/>", encoding="utf-8")
+
+        out = tree / "out.epub"
+        _create_output_epub(tree, out)
+
+        import zipfile
+
+        with zipfile.ZipFile(out) as zf:
+            names = zf.namelist()
+        assert names[0] == "mimetype"
+        assert "text/ch.xhtml" in names
+        assert not [n for n in names if n.endswith(".tmp") or n.endswith("out.epub")]
