@@ -151,8 +151,9 @@ and set a token — every `/api` request is then rejected without it:
 
 ```bash
 uv run swatl web --host 0.0.0.0 --token "$(openssl rand -hex 16)"
-# The CLI prints the URL to open, including ?token=…
-# Scripts can send `Authorization: Bearer <token>` instead.
+# The CLI prints the URL to open, with the token in the fragment (#token=…) so
+# it is not written to the server's access log.
+# Scripts can send `Authorization: Bearer <token>` (or ?token=<token>) instead.
 ```
 
 Binding to a network address *without* a token prints a warning, because anyone

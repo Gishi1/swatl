@@ -862,3 +862,111 @@ class TestWebCommandWarning:
         assert "Warning" not in result.output
         assert started["host"] == "127.0.0.1"
         assert started["token"] is None
+
+
+class TestAccessTokenEdgeCases:
+    """Tokens the CLI accepts must not break the API."""
+
+    def test_non_ascii_token_via_query_authenticates(self, tmp_path):
+        """compare_digest rejects non-ASCII str, which used to 500 every call.
+
+        A header cannot carry non-ASCII (HTTP forbids it), so this arrives as a
+        query parameter; the point is that the comparison no longer raises.
+        """
+        from swatl.web.app import set_access_token
+
+        set_access_token("中文-token-café")
+        try:
+            client = TestClient(app)
+            allowed = client.get(
+                "/api/segments",
+                params={"state_dir": str(tmp_path), "token": "中文-token-café"},
+            )
+            assert allowed.status_code == 200
+
+            denied = client.get(
+                "/api/segments",
+                params={"state_dir": str(tmp_path), "token": "中文-token-café-x"},
+            )
+            assert denied.status_code == 401
+        finally:
+            set_access_token(None)
+
+    def test_cli_rejects_a_non_ascii_token(self, monkeypatch):
+        """The GUI could never send it, so it is refused up front."""
+        from typer.testing import CliRunner
+
+        from swatl import cli
+
+        started = {}
+        monkeypatch.setattr(
+            "swatl.web.run_server",
+            lambda host, port, token=None: started.update({"token": token}),
+            raising=False,
+        )
+        result = CliRunner().invoke(cli.app, ["web", "--token", "中文"])
+
+        assert result.exit_code == 2
+        assert "ASCII" in result.output
+        assert not started, "the server must not start with an unusable token"
+
+    def test_non_ascii_guess_does_not_crash(self, tmp_path):
+        from swatl.web.app import set_access_token
+
+        set_access_token("secret")
+        try:
+            client = TestClient(app)
+            resp = client.get("/api/segments", params={"state_dir": str(tmp_path), "token": "café"})
+            assert resp.status_code == 401
+        finally:
+            set_access_token(None)
+
+    def test_export_endpoint_is_covered_by_the_token(self, tmp_path):
+        from swatl.web.app import set_access_token
+
+        set_access_token("secret")
+        try:
+            client = TestClient(app)
+            params = {"state_dir": str(tmp_path), "db": "default", "format": "json"}
+
+            assert client.get("/api/context/export", params=params).status_code == 401
+
+            # With the token the request reaches the endpoint (a database exists
+            # by then, so it succeeds rather than 404ing on a missing file).
+            client.post(
+                "/api/context",
+                params={"state_dir": str(tmp_path), "db": "default"},
+                json={"source_text": "红岸基地", "translated_text": "Red Coast Base"},
+                headers={"Authorization": "Bearer secret"},
+            )
+            exported = client.get(
+                "/api/context/export", params=params, headers={"Authorization": "Bearer secret"}
+            )
+            assert exported.status_code == 200
+        finally:
+            set_access_token(None)
+
+
+class TestTokenInTheUi:
+    """The embedded script must read the token and send it everywhere."""
+
+    def test_token_is_read_from_the_fragment(self):
+        from swatl.web.ui import html_page
+
+        assert "location.hash" in html_page
+        assert "loadToken" in html_page
+
+    def test_every_request_helper_sends_the_token(self):
+        import re
+
+        from swatl.web.ui import html_page
+
+        # api() and the three upload helpers.
+        assert html_page.count("authHeaders(") >= 5
+        # The context export builds its own request, and must not fall back to a
+        # plain navigation, which cannot carry the header.
+        export = re.search(
+            r"async function exportContextDb\(\)\s*\{(.*?)\n\}", html_page, re.DOTALL
+        )
+        assert export and "authHeaders()" in export.group(1)
+        assert "fetch(" in export.group(1)

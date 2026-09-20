@@ -27,7 +27,30 @@ from __future__ import annotations
 
 from collections import Counter
 
-__all__ = ["chrf", "levenshtein_distance", "levenshtein_similarity"]
+__all__ = [
+    "chrf",
+    "cosine_similarity",
+    "levenshtein_distance",
+    "levenshtein_similarity",
+]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors, in ``0 … 1`` for non-negative data.
+
+    Embeddings from the supported backends are L2-normalised, so this is a dot
+    product; the norms are still divided out so an unnormalised vector from a
+    custom endpoint cannot produce a score outside the documented range.
+    """
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
 
 # Character n-gram order and recall weight from Popović (2015); these are the
 # sacreBLEU defaults (`chrF2`, orders 1-6).

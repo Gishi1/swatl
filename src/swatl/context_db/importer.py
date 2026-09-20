@@ -59,11 +59,13 @@ def chunk_text(
                     end = start + newline + 1
                     chunk = text[start:end]
         stripped = chunk.strip()
-        if not stripped:
-            # A whitespace run longer than the chunk size produced an empty
-            # entry, which is stored but can never be retrieved.
-            continue
-        chunks.append(stripped)
+        if stripped:
+            chunks.append(stripped)
+        # A whitespace-only window stores nothing but MUST still advance the
+        # window: skipping the update below (an earlier `continue` did exactly
+        # that) loops forever on any run of whitespace longer than the window,
+        # hanging the CLI and, because the web handler is async and calls this
+        # synchronously, the whole server.
         # Advance: next start is after current end minus overlap, always
         # moving forward by at least one character.
         next_start = end - overlap if end < len(text) else len(text)

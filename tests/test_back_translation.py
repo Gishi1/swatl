@@ -427,3 +427,75 @@ class TestSimilarityMetricSelection:
         )
         assert report.metric == "chrf"
         assert "chrf" in report.summary()
+
+
+class TestSemanticMetric:
+    """The optional embedding-based metric (a learned similarity)."""
+
+    class StubEmbedder:
+        """Maps text to a fixed vector so the score is predictable."""
+
+        def __init__(self, mapping):
+            self.mapping = mapping
+            self.calls = 0
+
+        def embed(self, texts):
+            self.calls += 1
+            return [self.mapping.get(t, [0.0, 0.0]) for t in texts]
+
+    def test_identical_direction_scores_one(self):
+        from swatl.quality.back_translation import score_similarity
+
+        embedder = self.StubEmbedder({"a": [1.0, 0.0], "b": [1.0, 0.0]})
+        assert score_similarity("a", "b", "semantic", embedder) == pytest.approx(1.0)
+
+    def test_orthogonal_text_scores_zero(self):
+        from swatl.quality.back_translation import score_similarity
+
+        embedder = self.StubEmbedder({"a": [1.0, 0.0], "b": [0.0, 1.0]})
+        assert score_similarity("a", "b", "semantic", embedder) == pytest.approx(0.0)
+
+    def test_partial_overlap(self):
+        from swatl.quality.back_translation import score_similarity
+
+        embedder = self.StubEmbedder({"a": [1.0, 0.0], "b": [1.0, 1.0]})
+        assert score_similarity("a", "b", "semantic", embedder) == pytest.approx(0.7071, abs=1e-4)
+
+    def test_missing_embedder_is_an_error(self):
+        from swatl.quality.back_translation import score_similarity
+
+        with pytest.raises(ValueError, match="embedding backend"):
+            score_similarity("a", "b", "semantic")
+
+    def test_thresholds_exist_and_are_ordered(self):
+        from swatl.quality.back_translation import THRESHOLDS
+
+        ok, warn = THRESHOLDS["semantic"]
+        assert 0 < warn < ok <= 1.0
+
+    def test_help_text_lists_the_metric(self):
+        from typer.testing import CliRunner
+
+        from swatl.cli import app
+
+        result = CliRunner().invoke(app, ["back-translate", "--help"])
+        assert "semantic" in result.output
+
+
+class TestCosineSimilarity:
+    def test_identical_vectors(self):
+        from swatl.quality.metrics import cosine_similarity
+
+        assert cosine_similarity([1.0, 2.0], [1.0, 2.0]) == pytest.approx(1.0)
+
+    def test_unnormalised_vectors_are_normalised(self):
+        from swatl.quality.metrics import cosine_similarity
+
+        assert cosine_similarity([3.0, 0.0], [0.5, 0.0]) == pytest.approx(1.0)
+
+    def test_mismatched_or_empty_input(self):
+        from swatl.quality.metrics import cosine_similarity
+
+        assert cosine_similarity([], [1.0]) == 0.0
+        assert cosine_similarity([1.0, 2.0], [1.0]) == 0.0
+        assert cosine_similarity([0.0, 0.0], [1.0, 0.0]) == 0.0

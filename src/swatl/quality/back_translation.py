@@ -40,23 +40,44 @@ def _auth_headers(api_key: str) -> dict[str, str]:
 THRESHOLDS: dict[str, tuple[float, float]] = {
     "chrf": (0.45, 0.25),
     "levenshtein": (0.70, 0.40),
+    # Measured with bge-m3 on 26 real zh->en->zh round trips: every faithful one
+    # scored at least 0.776 (median 0.984), while mismatched pairs reached 0.778
+    # at most — so 0.80 admits no mismatched pair at all in that sample. Other
+    # embedding models have their own scale; these are the bge-m3 cut-offs.
+    "semantic": (0.80, 0.65),
 }
 
 DEFAULT_METRIC = "chrf"
 
 
-def score_similarity(source: str, back_translated: str, metric: str = DEFAULT_METRIC) -> float:
+def score_similarity(
+    source: str,
+    back_translated: str,
+    metric: str = DEFAULT_METRIC,
+    embedder: Any | None = None,
+) -> float:
     """Similarity in ``0 … 1`` between the source and its back-translation.
 
     ``chrf`` is the standard character n-gram metric and handles Chinese without
-    a tokenizer; ``levenshtein`` is the older, coarser edit-distance ratio.
+    a tokenizer; ``levenshtein`` is the older, coarser edit-distance ratio;
+    ``semantic`` embeds both texts and compares them, which is the most accurate
+    of the three but needs an embedding backend (pass *embedder*).
     """
-    from swatl.quality.metrics import chrf, levenshtein_similarity
+    from swatl.quality.metrics import chrf, cosine_similarity, levenshtein_similarity
 
     if metric == "levenshtein":
         return levenshtein_similarity(source, back_translated)
+    if metric == "semantic":
+        if embedder is None:
+            raise ValueError("The 'semantic' metric needs an embedding backend")
+        vectors = embedder.embed([source, back_translated])
+        if len(vectors) != 2:
+            raise ValueError(f"Embedder returned {len(vectors)} vectors for 2 texts")
+        return cosine_similarity(vectors[0], vectors[1])
     if metric != "chrf":
-        raise ValueError(f"Unknown similarity metric {metric!r}: use 'chrf' or 'levenshtein'")
+        raise ValueError(
+            f"Unknown similarity metric {metric!r}: use 'chrf', 'levenshtein' or 'semantic'"
+        )
     return chrf(source, back_translated)
 
 
@@ -101,6 +122,7 @@ async def back_translate_segment(
     timeout: float = 60.0,
     metric: str = DEFAULT_METRIC,
     source_language: str = "Chinese",
+    embedder: Any | None = None,
 ) -> BackTranslationResult:
     """Back-translate a single segment using an LLM API."""
     # Same endpoint convention as the translation provider: base_url already
@@ -136,7 +158,14 @@ async def back_translate_segment(
         content, _usage = parse_chat_completion(response)
         back_translated = (content or "").strip()
 
-    similarity = score_similarity(segment.source_text, back_translated, metric)
+    if metric == "semantic":
+        # The embedder is a synchronous HTTP call; running it in a worker thread
+        # keeps the event loop free for the other sampled segments.
+        similarity = await asyncio.to_thread(
+            score_similarity, segment.source_text, back_translated, metric, embedder
+        )
+    else:
+        similarity = score_similarity(segment.source_text, back_translated, metric)
     ok_threshold, warn_threshold = THRESHOLDS[metric]
 
     if similarity >= ok_threshold:
@@ -164,6 +193,7 @@ async def back_translate_sample(
     timeout: float = 60.0,
     metric: str = DEFAULT_METRIC,
     source_language: str = "Chinese",
+    embedder: Any | None = None,
 ) -> BackTranslationReport:
     """Back-translate a random sample of translated segments."""
     translated = [
@@ -187,6 +217,7 @@ async def back_translate_sample(
                 timeout=timeout,
                 metric=metric,
                 source_language=source_language,
+                embedder=embedder,
             )
         except Exception as e:
             logger.warning("Back-translation failed for segment %s: %s", seg.id, e)

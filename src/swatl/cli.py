@@ -713,7 +713,17 @@ def back_translate(
     metric: str = typer.Option(
         "chrf",
         "--metric",
-        help="Similarity metric: 'chrf' (character n-gram F-score) or 'levenshtein'.",
+        help="Similarity metric: 'chrf' (character n-gram F-score), 'levenshtein' "
+        "(edit distance) or 'semantic' (embedding similarity; needs a backend).",
+    ),
+    embedding_backend: str | None = typer.Option(
+        None, "--embedding-backend", help="Embedding backend for --metric semantic."
+    ),
+    embedding_model: str | None = typer.Option(
+        None, "--embedding-model", help="Embedding model for --metric semantic."
+    ),
+    embedding_url: str | None = typer.Option(
+        None, "--embedding-url", help="Embedding server for --metric semantic."
     ),
 ) -> None:
     """Run back-translation quality verification on a sample of translated segments.
@@ -729,6 +739,30 @@ def back_translate(
         save_report,
     )
     from swatl.state import SegmentStore
+
+    # The semantic metric needs an embedding model; without one the run falls
+    # back to chrF rather than failing.
+    embedder = None
+    if metric == "semantic":
+        from swatl.config import load_embedding_config
+        from swatl.context import resolve_embedding_config
+        from swatl.context.embedder import Embedder
+
+        resolution = resolve_embedding_config(
+            backend=embedding_backend,
+            model=embedding_model,
+            base_url=embedding_url,
+            config_file=load_embedding_config(),
+        )
+        if resolution.config is None:
+            console.print(
+                f"[yellow]Semantic scoring unavailable: {resolution.reason}. "
+                "Using chrF instead.[/yellow]"
+            )
+            metric = "chrf"
+        else:
+            embedder = Embedder(resolution.config)
+            console.print(f"[dim]Similarity: semantic ({embedder.describe()})[/dim]")
 
     state_dir = Path(state)
     store = SegmentStore(state_dir)
@@ -776,6 +810,7 @@ def back_translate(
             timeout=cfg.timeout,
             metric=metric,
             source_language=source_language,
+            embedder=embedder,
         )
     )
 
@@ -1094,6 +1129,16 @@ def web(
     """
     from swatl.web import run_server
 
+    if token and not token.isascii():
+        # HTTP header values are ASCII; a browser cannot send this token and the
+        # GUI would be unusable. Rejecting it here is kinder than a 401 later.
+        console.print(
+            "[red]The web token must contain only ASCII characters.[/red] "
+            "HTTP headers cannot carry other characters, so the GUI could not "
+            "authenticate with it. Try something like: openssl rand -hex 16"
+        )
+        raise SystemExit(2)
+
     loopback = host in ("127.0.0.1", "localhost", "::1", "[::1]")
     if not loopback and not token:
         console.print(
@@ -1110,7 +1155,9 @@ def web(
     url = f"http://{display_host}:{port}/"
     console.print(f"[bold]Starting swatl web GUI at {url}[/bold]")
     if token:
-        console.print(f"  Open: {url}?token={token}")
+        # The fragment keeps the token out of the server's access log, and the
+        # GUI strips it from the address bar as soon as it has read it.
+        console.print(f"  Open: {url}#token={token}")
     console.print("  Press Ctrl+C to stop.")
 
     run_server(host, port, token=token or None)

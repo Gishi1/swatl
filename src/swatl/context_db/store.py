@@ -152,10 +152,19 @@ def _atomic_write_json(path: Path, data: list[dict[str, Any]]) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
+        # Only back up content that parses: if the database was already corrupt
+        # (and recovered from the backup on read), copying it over the backup
+        # would destroy the last good copy.
         try:
-            shutil.copyfile(path, _backup_path(path))
-        except OSError:  # pragma: no cover - the backup is best effort
-            logger.debug("Could not back up %s", path, exc_info=True)
+            backup_is_worth_keeping = isinstance(json.loads(path.read_text(encoding="utf-8")), list)
+        except (OSError, json.JSONDecodeError):
+            backup_is_worth_keeping = False
+            logger.warning("Not backing up %s: it is not valid JSON", path)
+        if backup_is_worth_keeping:
+            try:
+                shutil.copyfile(path, _backup_path(path))
+            except OSError:  # pragma: no cover - the backup is best effort
+                logger.debug("Could not back up %s", path, exc_info=True)
 
     tmp_path = path.with_name(path.name + ".tmp")
     try:

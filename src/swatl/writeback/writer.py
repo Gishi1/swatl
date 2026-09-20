@@ -6,6 +6,7 @@ import logging
 import os
 import zipfile
 from pathlib import Path
+from typing import Any
 
 from lxml import html
 
@@ -155,6 +156,31 @@ def _set_opf_language(epub_dir: Path, target_lang: str) -> None:
     logger.debug("Set dc:language=%s in %s", target_lang, opf_path.name)
 
 
+def _top_level_container(element, body):
+    """The ancestor of *element* that is a direct child of *body*.
+
+    A side-by-side edition duplicates whole blocks, not individual text nodes:
+    replacing a paragraph with a pair of paragraphs discarded the inline
+    elements inside it, and duplicating an inline element on its own produced
+    invalid markup.
+    """
+    current = element
+    while current is not None and current is not body:
+        parent = current.getparent()
+        if parent is None or parent is body:
+            return current if current is not body else None
+        current = parent
+    return None
+
+
+def _mark_as_source(element) -> None:
+    """Tag a duplicated block so a stylesheet can hide or restyle it."""
+    classes = (element.get("class") or "").split()
+    if "swatl-source" not in classes:
+        classes.append("swatl-source")
+    element.set("class", " ".join(classes).strip())
+
+
 def _write_bilingual_doc(
     source_path: Path,
     segments: list[Segment],
@@ -164,83 +190,65 @@ def _write_bilingual_doc(
 ) -> None:
     """Write one document as a side-by-side version of itself.
 
-    Each translated text node becomes a small block holding the source text and
-    the translation. The source half always comes from the segment rather than
-    from the tree, so the two halves can never end up identical, and the whole
-    document (including its ``<head>``) is preserved. ``bilingual_dir`` plus
-    *doc_path* resolve to the document being replaced; the caller passes the
-    EPUB root and the document's own relative path.
+    The document is translated in place — so inline markup and its translations
+    survive — and then, for every top-level block that changed, a copy of that
+    block in the source language is inserted before it. The reader therefore
+    sees each block twice: source, then translation.
+
+    ``bilingual_dir`` and *doc_path* resolve to the document being replaced; the
+    caller passes the EPUB root and the document's own relative path.
     """
-    from lxml import html as lxml_html
+    from copy import deepcopy
+
+    # Two trees from the same file: one keeps the source text for the copies,
+    # the other receives the translations. Resolving an anchor in both is
+    # reliable because nothing has been inserted or removed yet.
+    source_tree = parse_xhtml(source_path)
+    source_root = source_tree.getroot()
+    source_body = source_tree.find(".//body")
+    if source_body is None:
+        source_body = source_root
 
     tree = parse_xhtml(source_path)
     root = tree.getroot()
-    body = root.find(".//body")
+    body = tree.find(".//body")
     if body is None:
         body = root
 
-    def _wrapper(source_text: str, translated: str):
-        wrapper = lxml_html.Element("div")
-        wrapper.set("class", "swatl-bilingual")
+    _apply_translations(root, body, segments, target_lang)
 
-        source_p = lxml_html.Element("p")
-        source_p.set("class", "swatl-source")
-        source_p.set("style", "color:#666; margin-bottom:0.2em; font-size:0.9em")
-        source_p.text = source_text
-
-        target_p = lxml_html.Element("p")
-        target_p.set("class", "swatl-target")
-        target_p.set("style", "margin-top:0.2em")
-        target_p.text = translated
-
-        wrapper.append(source_p)
-        wrapper.append(target_p)
-        return wrapper
-
-    # Deepest anchors first, so replacing a parent does not invalidate the
-    # anchors of its children. The caller's list is copied: sorting it in place
-    # used to reorder another function's input.
-    ordered = sorted(segments, key=lambda s: s.anchor.count("/"), reverse=True)
-
-    for seg in ordered:
-        translated = seg.translated or ""
-        if not translated:
-            continue
+    # Collect the blocks to duplicate first, then insert from the end so that
+    # inserting one block cannot shift the positions of the ones still to come.
+    targets: dict[int, Any] = {}
+    for seg in segments:
+        if not (seg.translated or "").strip() or seg.anchor.startswith("/"):
+            continue  # <head> content has no block to duplicate
         try:
-            is_tail = seg.anchor.endswith(TAIL_MARKER)
-            anchor = seg.anchor[: -len(TAIL_MARKER)] if is_tail else seg.anchor
-            context = root if anchor.startswith("/") else body
-            elements = context.xpath(anchor)
-            if not elements:
-                continue
-            element = elements[0]
+            translated_element, _is_tail = _resolve_element(root, body, seg)
+            source_element, _is_tail = _resolve_element(source_root, source_body, seg)
         except Exception as e:  # a malformed anchor must not abort the export
             logger.warning("Bilingual copy skipped %s: %s", seg.id, e)
             continue
+        if translated_element is None or source_element is None:
+            continue
+
+        translated_block = _top_level_container(translated_element, body)
+        source_block = _top_level_container(source_element, source_body)
+        if translated_block is None or source_block is None:
+            continue
 
         try:
-            # Only body content is wrapped: a <title> lives in <head>, where a
-            # <div> would be invalid and would strip the document of its title.
-            if body is not root and body not in set(element.iterancestors()):
-                continue
+            position = list(body).index(translated_block)
+        except ValueError:  # pragma: no cover - defensive
+            continue
+        # One entry per block: a paragraph, its inline children and its tails all
+        # resolve to the same block.
+        targets.setdefault(position, source_block)
 
-            parent = element.getparent()
-            if is_tail:
-                # A tail is not an element: place the block right after the
-                # element the text follows. It used to raise XPathEvalError on
-                # the unstripped "#tail" anchor and vanish from the copy.
-                if parent is None:
-                    continue
-                parent.insert(
-                    list(parent).index(element) + 1, _wrapper(seg.source_text, translated)
-                )
-            else:
-                if parent is None:
-                    continue
-                parent.insert(list(parent).index(element), _wrapper(seg.source_text, translated))
-                parent.remove(element)
-        except Exception as e:
-            logger.warning("Failed to write bilingual segment %s: %s", seg.id, e)
+    for position in sorted(targets, reverse=True):
+        copy = deepcopy(targets[position])
+        _mark_as_source(copy)
+        body.insert(position, copy)
 
     out_path = bilingual_dir / doc_path
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -248,6 +256,56 @@ def _write_bilingual_doc(
     # survives, then set the language attributes on the copy.
     _serialize_document(tree, root, out_path)
     _set_lang(out_path, target_lang)
+
+
+def _resolve_element(root, body, seg: Segment) -> tuple[Any, bool]:
+    """Resolve a segment's anchor to the element (and node kind) it addresses."""
+    anchor = seg.anchor
+    is_tail = anchor.endswith(TAIL_MARKER)
+    if is_tail:
+        anchor = anchor[: -len(TAIL_MARKER)]
+
+    # Absolute anchors (e.g. /html/head/title[1]) are resolved from the document
+    # root; everything else from <body>.
+    context = root if anchor.startswith("/") else body
+    elements = context.xpath(anchor)
+    if not elements:
+        return None, is_tail
+
+    # Anchors are unambiguous child steps, so this normally finds one element;
+    # the source-text check stays as a safety net for anchors stored by older
+    # versions (which used the ambiguous ".//p[1]").
+    element = elements[0]
+    if len(elements) > 1:
+        source = seg.source_text.strip()
+        attr = "tail" if is_tail else "text"
+        element = next(
+            (e for e in elements if (getattr(e, attr) or "").strip() == source),
+            elements[0],
+        )
+    return element, is_tail
+
+
+def _apply_translations(root, body, segments: list[Segment], target_lang: str) -> int:
+    """Replace every segment's text node in place, preserving the markup.
+
+    Only the addressed text node changes: nested ``<em>``, ``<a>`` and friends
+    keep their own text and their own translations.
+    """
+    replaced = 0
+    # Deepest anchors first, so an ancestor's replacement cannot invalidate a
+    # descendant's anchor.
+    for seg in sorted(segments, key=lambda s: s.anchor.count("/"), reverse=True):
+        try:
+            element, is_tail = _resolve_element(root, body, seg)
+            if element is None:
+                logger.warning("Anchor not found for segment %s: %s", seg.id, seg.anchor)
+                continue
+            _replace_text(element, seg.translated or "", target_lang, is_tail=is_tail)
+            replaced += 1
+        except Exception as e:
+            logger.warning("Failed to write segment %s: %s", seg.id, e)
+    return replaced
 
 
 def _write_document(path: Path, segments: list[Segment], target_lang: str) -> None:
@@ -267,42 +325,7 @@ def _write_document(path: Path, segments: list[Segment], target_lang: str) -> No
     if body is None:
         body = root
 
-    # Sort segments by anchor depth to handle nested replacements properly
-    # Process from deepest to shallowest to avoid anchor invalidation
-    segments.sort(key=lambda s: s.anchor.count("/"), reverse=True)
-
-    replaced = 0
-    for seg in segments:
-        try:
-            anchor = seg.anchor
-            is_tail = anchor.endswith(TAIL_MARKER)
-            if is_tail:
-                anchor = anchor[: -len(TAIL_MARKER)]
-
-            # Absolute anchors (e.g. /html/head/title[1]) are resolved from the
-            # document root; everything else from <body>.
-            context = root if anchor.startswith("/") else body
-            elements = context.xpath(anchor)
-            if not elements:
-                logger.warning("Anchor not found for segment %s: %s", seg.id, seg.anchor)
-                continue
-
-            # Anchors are unambiguous child steps, so this normally finds one
-            # element; the source-text check stays as a safety net for anchors
-            # stored by older versions (which used the ambiguous ".//p[1]").
-            element = elements[0]
-            if len(elements) > 1:
-                source = seg.source_text.strip()
-                attr = "tail" if is_tail else "text"
-                element = next(
-                    (e for e in elements if (getattr(e, attr) or "").strip() == source),
-                    elements[0],
-                )
-            _replace_text(element, seg.translated or "", target_lang, is_tail=is_tail)
-            replaced += 1
-
-        except Exception as e:
-            logger.warning("Failed to write segment %s: %s", seg.id, e)
+    replaced = _apply_translations(root, body, segments, target_lang)
 
     # This write is what actually puts the translation into the EPUB: without
     # it the modified in-memory tree is silently discarded.

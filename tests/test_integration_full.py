@@ -90,7 +90,7 @@ class TestFullFeatureIntegration:
             names = zf.namelist()
             assert not [n for n in names if n.startswith("bilingual/")]
             assert any(
-                "swatl-bilingual" in zf.read(n).decode("utf-8")
+                'class="swatl-source"' in zf.read(n).decode("utf-8")
                 for n in names
                 if n.endswith(".xhtml")
             )

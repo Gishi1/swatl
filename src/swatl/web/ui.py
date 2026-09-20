@@ -477,18 +477,20 @@ let filterTimer = null;
 
 const API = '/api';
 
-// Optional access token. It arrives once as ?token=…, is kept for the session
-// and is removed from the address bar so it does not linger in history.
+// Optional access token. It arrives once as #token=… (a fragment is never sent
+// to the server, so it stays out of access logs) or as ?token=… for scripts.
+// It is kept for the session and removed from the address bar immediately.
 const TOKEN_KEY = 'swatl_token';
 function loadToken() {
-  const params = new URLSearchParams(location.search);
-  const fromUrl = params.get('token');
-  if (!fromUrl) return sessionStorage.getItem(TOKEN_KEY) || '';
-  sessionStorage.setItem(TOKEN_KEY, fromUrl);
-  params.delete('token');
-  const qs = params.toString();
-  history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
-  return fromUrl;
+  const hashParams = new URLSearchParams(location.hash.replace(/^#/, ''));
+  const searchParams = new URLSearchParams(location.search);
+  const token = hashParams.get('token') || searchParams.get('token');
+  if (!token) return sessionStorage.getItem(TOKEN_KEY) || '';
+  sessionStorage.setItem(TOKEN_KEY, token);
+  searchParams.delete('token');
+  const qs = searchParams.toString();
+  history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+  return token;
 }
 const TOKEN = loadToken();
 function authHeaders(extra) {
@@ -826,20 +828,28 @@ async function deleteContextDb() {
   } catch(e) { toast('Could not delete database: ' + e.message, true); }
 }
 
-function exportContextDb() {
+async function exportContextDb() {
   const sd = getStateDir();
   const db = getContextDb();
   const url = API + '/context/export?state_dir=' + encodeURIComponent(sd)
     + '&db=' + encodeURIComponent(db) + '&format=json';
-  // A download link keeps the single-page app on its current view, unlike
-  // assigning window.location.
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = `context-${db}.json`;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  toast(`Exported '${db}' as JSON`);
+  try {
+    // Fetched rather than assigned to a link: a plain navigation cannot carry
+    // the Authorization header, so with a token configured the browser used to
+    // save the 401 response body as the export file.
+    const r = await fetch(url, { headers: authHeaders() });
+    if (!r.ok) throw new Error(await errorText(r));
+    const blob = await r.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = `context-${db}.json`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+    toast(`Exported '${db}' as JSON`);
+  } catch(e) { toast('Could not export database: ' + e.message, true); }
 }
 
 function renderContextEntries() {

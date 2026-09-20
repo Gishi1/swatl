@@ -63,7 +63,13 @@ async def _require_token(request, call_next):
     """Reject API calls that do not carry the configured token."""
     if _WEB_TOKEN and request.url.path.startswith("/api"):
         presented = _presented_token(request)
-        if not presented or not hmac.compare_digest(presented, _WEB_TOKEN):
+        # compare_digest() rejects non-ASCII str arguments, so a token with an
+        # accent or a CJK passphrase used to make every API call raise (a 500)
+        # instead of authenticating. Comparing the UTF-8 bytes keeps the check
+        # constant time and accepts any token the CLI allows.
+        if not presented or not hmac.compare_digest(
+            presented.encode("utf-8"), _WEB_TOKEN.encode("utf-8")
+        ):
             return JSONResponse(
                 status_code=401,
                 content={

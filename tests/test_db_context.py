@@ -479,3 +479,70 @@ class TestKeywordFallback:
         )
         assert len(batches) == 2
         assert "Red Coast Base" in batches[0]
+
+
+class TestChunkTextTermination:
+    """`chunk_text` must always advance, whatever the input."""
+
+    @staticmethod
+    def _run_with_timeout(func, seconds=5):
+        import threading
+
+        result = {}
+
+        def runner():
+            result["value"] = func()
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join(timeout=seconds)
+        assert not thread.is_alive(), "chunk_text did not finish"
+        return result.get("value")
+
+    def test_long_whitespace_run_does_not_hang(self):
+        """A whitespace-only window used to skip the advance and loop forever.
+
+        The web import handlers call this synchronously from an async route, so
+        the hang took the whole server with it.
+        """
+        from swatl.context_db.importer import chunk_text
+
+        chunks = self._run_with_timeout(lambda: chunk_text("A" + " " * 1200 + "B", 500, 100))
+        assert chunks == ["A", "B"]
+
+    def test_overlap_larger_than_chunk_terminates(self):
+        from swatl.context_db.importer import chunk_text
+
+        chunks = self._run_with_timeout(lambda: chunk_text("A" + " " * 30 + "B", 10, 100))
+        assert chunks == ["A", "B"]
+
+    def test_text_of_only_whitespace_returns_nothing(self):
+        from swatl.context_db.importer import chunk_text
+
+        assert chunk_text("   \n\t ", 10, 2) == []
+
+
+class TestContextDatabaseBackup:
+    """A corrupt database must not destroy the last good backup."""
+
+    def test_backup_is_not_overwritten_by_corrupt_content(self, tmp_path):
+        from swatl.context.db_context import build_keyword_retriever  # noqa: F401
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore, _backup_path
+
+        store = ContextEntryStore(str(tmp_path))
+        store.create(ContextEntry(source_text="红岸基地", translated_text="Red Coast Base"))
+        store.create(ContextEntry(source_text="叶文洁", translated_text="Ye Wenjie"))
+        backup = _backup_path(store.entries_file)
+        assert backup.exists()
+        good = backup.read_text(encoding="utf-8")
+
+        # Corrupt the live file, then write again: the backup must survive.
+        store.entries_file.write_text("{ not json", encoding="utf-8")
+        store.create(ContextEntry(source_text="三体", translated_text="Three-Body"))
+
+        assert backup.read_text(encoding="utf-8") == good
+        # And the corrupt file is replaced by valid JSON.
+        import json
+
+        assert isinstance(json.loads(store.entries_file.read_text(encoding="utf-8")), list)
