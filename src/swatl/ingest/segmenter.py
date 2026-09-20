@@ -93,6 +93,43 @@ def detect_document_encoding(path: Path) -> str | None:
         return None
 
 
+_CDATA_COMMENT_RE = re.compile(r"^\[CDATA\[(.*)\]\]$", re.DOTALL)
+
+
+def restore_cdata_text(root: Any) -> int:
+    """Splice ``<![CDATA[…]]>`` sections back into the text they belong to.
+
+    libxml2's HTML parser has no concept of CDATA: it stores the section as a
+    comment node, so the content is never segmented and is re-emitted as
+    ``<!--[CDATA[…]]-->``, which no reader displays. The content is moved back
+    into the surrounding text node — the section boundary has no rendering
+    meaning, so the paragraph then translates as a whole.
+
+    Returns the number of sections restored.
+    """
+    from lxml import etree
+
+    restored = 0
+    for comment in list(root.iter(etree.Comment)):
+        match = _CDATA_COMMENT_RE.match((comment.text or "").strip())
+        if not match:
+            continue
+        parent = comment.getparent()
+        if parent is None:  # pragma: no cover - cannot happen for a parsed tree
+            continue
+
+        content = match.group(1) + (comment.tail or "")
+        previous = comment.getprevious()
+        if previous is not None:
+            previous.tail = (previous.tail or "") + content
+        else:
+            parent.text = (parent.text or "") + content
+        parent.remove(comment)
+        restored += 1
+
+    return restored
+
+
 def parse_xhtml(path: Path):
     """Parse an XHTML content document into an lxml tree.
 
@@ -102,7 +139,13 @@ def parse_xhtml(path: Path):
     UTF-8.
     """
     encoding = detect_document_encoding(path) or "utf-8"
-    return html.parse(str(path), parser=html.HTMLParser(encoding=encoding))
+    tree = html.parse(str(path), parser=html.HTMLParser(encoding=encoding))
+    root = tree.getroot()
+    if root is not None:
+        restored = restore_cdata_text(root)
+        if restored:
+            logger.debug("Restored %d CDATA section(s) in %s", restored, path.name)
+    return tree
 
 
 def parse_xml(path: Path):

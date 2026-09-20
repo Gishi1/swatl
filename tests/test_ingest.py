@@ -597,3 +597,105 @@ class TestContainerLookup:
 
         info, _epub_dir = extract_epub(book, output_dir=tmp_path / "out")
         assert info.title == "真实的标题"
+
+
+class TestCdataSections:
+    """CDATA content must survive parsing as translatable text.
+
+    libxml2's HTML parser stores ``<![CDATA[…]]>`` as a comment, so the text was
+    never segmented and the document was re-emitted as ``<!--[CDATA[…]]-->``,
+    which no reader displays.
+    """
+
+    @staticmethod
+    def _doc(tmp_path, body: str):
+        doc = tmp_path / "cdata.xhtml"
+        doc.write_text(
+            f"<html><head><title>标题</title></head><body>{body}</body></html>",
+            encoding="utf-8",
+        )
+        return doc
+
+    def test_cdata_only_paragraph_is_segmented(self, tmp_path):
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<p><![CDATA[整段中文]]></p>")
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("cdata.xhtml", body)
+
+        assert [s.source_text for s in segments if s.tag != "title"] == ["整段中文"]
+
+    def test_cdata_between_text_is_merged(self, tmp_path):
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<p>前段<![CDATA[中文内容]]>后段</p>")
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("cdata.xhtml", body)
+
+        texts = [s.source_text for s in segments if s.tag == "p"]
+        assert texts == ["前段中文内容后段"]
+
+    def test_ordinary_comments_are_kept(self, tmp_path):
+        from lxml import etree
+
+        from swatl.ingest.segmenter import parse_xhtml
+
+        doc = self._doc(tmp_path, "<!-- keep me --><p>正文</p>")
+        root = parse_xhtml(doc).getroot()
+        comments = [c.text for c in root.iter(etree.Comment)]
+
+        assert " keep me " in comments
+        assert not any("CDATA" in (c or "") for c in comments)
+
+    def test_cdata_text_is_visible_after_write_back(self, fixture_epub, tmp_path):
+        """The exported document must show the text, not a comment."""
+        import asyncio
+        import zipfile
+
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+        from swatl.providers.mock import MockProvider
+        from swatl.translate.translator import Translator
+        from swatl.writeback.writer import writeback_segments
+
+        doc = self._doc(tmp_path, "<p><![CDATA[红岸基地是一座秘密设施。]]></p>")
+        book = tmp_path / "cdata.epub"
+        import zipfile as zf_mod
+
+        with zf_mod.ZipFile(book, "w") as z:
+            z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
+            z.writestr(
+                "META-INF/container.xml",
+                '<?xml version="1.0"?><container version="1.0" '
+                'xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles>'
+                '<rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>'
+                "</rootfiles></container>",
+            )
+            z.writestr(
+                "content.opf",
+                '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" '
+                'version="2.0"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+                "<dc:title>t</dc:title><dc:language>zh</dc:language></metadata>"
+                '<manifest><item id="c" href="cdata.xhtml" '
+                'media-type="application/xhtml+xml"/></manifest>'
+                '<spine><itemref idref="c"/></spine></package>',
+            )
+            z.writestr("cdata.xhtml", doc.read_text(encoding="utf-8"))
+
+        info, epub_dir = extract_epub(book)
+        segments, _ = extract_segments_from_epub(
+            epub_dir, info.spine_items, info.mime_types, info.language
+        )
+        assert segments, "the CDATA paragraph produced no segment"
+
+        translated = asyncio.run(
+            Translator(MockProvider(name="mock"), "zh", "en").translate_all(segments)
+        )
+        out = writeback_segments(
+            epub_dir, translated, target_lang="en", output_path=tmp_path / "o.epub"
+        )
+
+        with zipfile.ZipFile(out) as z:
+            content = z.read("cdata.xhtml").decode("utf-8")
+
+        assert "[CDATA[" not in content
+        assert "char" in content  # the mock provider's rendering of CJK
