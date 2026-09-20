@@ -104,6 +104,99 @@ def parse_xhtml(path: Path):
     return html.parse(str(path), parser=html.HTMLParser(encoding=encoding))
 
 
+def parse_xml(path: Path):
+    """Parse a well-formed XML document (an EPUB2 NCX) without losing namespaces.
+
+    Content documents go through the tolerant HTML parser, which also strips
+    namespaces. Feeding it an NCX would rewrite the table of contents as HTML,
+    so XML documents get a real XML parser instead. Recovery is enabled because
+    a malformed book should still translate, and entity resolution and network
+    access are off because the input is untrusted.
+    """
+    from lxml import etree
+
+    parser = etree.XMLParser(recover=True, resolve_entities=False, no_network=True)
+    return etree.parse(str(path), parser)
+
+
+def _local_name(tag: Any) -> str:
+    """Tag name without its ``{namespace}`` prefix, keeping the document's case.
+
+    XPath's ``local-name()`` is case-sensitive and an NCX uses camelCase names
+    (``navPoint``, ``docTitle``), so an anchor must carry the original casing to
+    resolve. Callers that compare names do so case-insensitively themselves.
+    """
+    if not isinstance(tag, str):
+        return ""
+    return tag.rsplit("}", 1)[-1]
+
+
+def build_xml_anchor(root: Any, element: Any) -> str:
+    """Build a namespace-agnostic XPath from *root* to *element*.
+
+    An NCX declares a default namespace, so an unprefixed path such as
+    ``.//navPoint`` matches nothing. Each step is written as
+    ``*[local-name()='navPoint'][2]`` — the index is the position among siblings
+    with the same local name — which resolves against the original tree during
+    write-back without depending on the namespace prefix a producer chose.
+    """
+    steps: list[str] = []
+    current = element
+    while current is not None and current is not root:
+        name = _local_name(current.tag)
+        parent = current.getparent()
+        if name:
+            siblings = [
+                child
+                for child in (parent if parent is not None else [])
+                if _local_name(child.tag) == name
+            ]
+            index = siblings.index(current) + 1 if current in siblings else 1
+            steps.append(f"*[local-name()='{name}'][{index}]")
+        current = parent
+
+    steps.reverse()
+    return "./" + "/".join(steps) if steps else "."
+
+
+def extract_segments_from_ncx(
+    doc_path: str,
+    root: Any,
+    start_index: int = 0,
+) -> tuple[list[Segment], int]:
+    """Extract the table-of-contents labels from an EPUB2 NCX document.
+
+    Both the ``<docTitle>`` and every ``<navPoint>`` label are shown by reading
+    systems, so leaving them in the source language produces a book whose
+    contents list is in Chinese while the text is in English.
+    """
+    segments: list[Segment] = []
+    counter = start_index
+
+    for element in root.iter():
+        if _local_name(element.tag).lower() != "text":
+            continue
+        parent = element.getparent()
+        if parent is None or _local_name(parent.tag).lower() not in ("navlabel", "doctitle"):
+            continue
+        text = (element.text or "").strip()
+        if not text:
+            continue
+        counter += 1
+        segments.append(
+            Segment(
+                id=f"ncx-{counter:04d}",
+                doc=doc_path,
+                anchor=build_xml_anchor(root, element),
+                tag="navLabel" if _local_name(parent.tag).lower() == "navlabel" else "docTitle",
+                source_text=text,
+                part="text",
+            )
+        )
+
+    return segments, counter
+
+
 # Language pair direction hints
 _ZH_LANGS = {"zh", "zh-cn", "zh-tw", "zh-hans", "zh-hant", "cmn"}
 _EN_LANGS = {"en", "en-us", "en-gb", "en-au"}
@@ -315,6 +408,18 @@ def extract_segments_from_epub(
 
         doc_count += 1
         rel_path = str(candidate.relative_to(epub_dir))
+
+        # An NCX is XML, not XHTML: it has no <body>, and the HTML parser would
+        # both drop its namespace and rewrite the file as HTML on export.
+        if candidate.suffix.lower() == ".ncx":
+            try:
+                ncx_root = parse_xml(candidate).getroot()
+            except Exception as e:
+                logger.warning("Failed to parse NCX %s: %s", rel_path, e)
+                continue
+            segs, global_counter = extract_segments_from_ncx(rel_path, ncx_root, global_counter)
+            all_segments.extend(segs)
+            continue
 
         try:
             tree = parse_xhtml(candidate)

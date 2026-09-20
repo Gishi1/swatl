@@ -34,6 +34,7 @@ class EpubInfo:
     spine_items: list[str]  # list of href paths in spine order
     mime_types: dict[str, str]  # path → media_type from manifest
     nav_items: list[str]  # EPUB3 navigation document(s), not part of the spine
+    ncx_items: list[str]  # EPUB2 NCX table(s) of contents, also outside the spine
 
     def __init__(
         self,
@@ -44,6 +45,7 @@ class EpubInfo:
         spine_items: list[str],
         mime_types: dict[str, str],
         nav_items: list[str] | None = None,
+        ncx_items: list[str] | None = None,
     ):
         self.title = title
         self.author = author
@@ -52,6 +54,7 @@ class EpubInfo:
         self.spine_items = spine_items
         self.mime_types = mime_types
         self.nav_items = nav_items or []
+        self.ncx_items = ncx_items or []
 
 
 def extract_epub(
@@ -173,6 +176,7 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
     # ── Manifest (media types) ──
     manifest: dict[str, str] = {}
     nav_items: list[str] = []
+    ncx_items: list[str] = []
     manifest_elem = root.find(_q("manifest"))
     if manifest_elem is not None:
         for item in manifest_elem.findall(_q("item")):
@@ -186,6 +190,10 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
                 properties = item.get("properties", "") or ""
                 if "nav" in properties.split():
                     nav_items.append(href)
+                # EPUB2 table of contents. Readers show these labels, so they
+                # need translating just as much as an EPUB3 nav document.
+                if "dtbncx" in media_type or href.lower().endswith(".ncx"):
+                    ncx_items.append(href)
 
     # ── Spine ──
     spine_items: list[str] = []
@@ -224,6 +232,7 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
 
     # A navigation document that is also in the spine is already segmented.
     nav_items = [href for href in nav_items if href not in spine_items]
+    ncx_items = [href for href in ncx_items if href not in spine_items]
 
     return EpubInfo(
         title=title,
@@ -233,6 +242,7 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
         spine_items=spine_items,
         mime_types=manifest,
         nav_items=nav_items,
+        ncx_items=ncx_items,
     )
 
 

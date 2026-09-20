@@ -383,3 +383,96 @@ class TestInlineTailsAndEncoding:
         # Exclude the document <title>, which is segmented separately.
         texts = [s.source_text for s in segments if s.tag != "title"]
         assert texts == ["块前", "段落", "块后"]
+
+
+class TestEpub2NcxSegmentation:
+    """EPUB2 tables of contents (toc.ncx) must be translated too.
+
+    Readers show these labels in the contents list, so leaving them in the
+    source language gives an English book with a Chinese table of contents.
+    """
+
+    @staticmethod
+    def _extract(fixture_epub):
+        from swatl.ingest import extract_epub, extract_segments_from_epub
+
+        info, epub_dir = extract_epub(fixture_epub)
+        segments, doc_count = extract_segments_from_epub(
+            epub_dir,
+            info.spine_items,
+            info.mime_types,
+            info.language,
+            extra_docs=info.nav_items + info.ncx_items,
+        )
+        return info, epub_dir, segments, doc_count
+
+    def test_ncx_is_detected(self, fixture_epub):
+        info, _epub_dir, _segments, _docs = self._extract(fixture_epub)
+        assert info.ncx_items == ["toc.ncx"]
+
+    def test_ncx_is_not_mistaken_for_xhtml(self, fixture_epub):
+        """NCX is XML: the HTML parser would drop its namespace."""
+        info, _epub_dir, _segments, _docs = self._extract(fixture_epub)
+        assert "toc.ncx" not in info.nav_items
+        assert "toc.ncx" not in info.spine_items
+
+    def test_doc_title_and_nav_labels_are_segmented(self, fixture_epub):
+        _info, _epub_dir, segments, _docs = self._extract(fixture_epub)
+        ncx = [s for s in segments if s.doc == "toc.ncx"]
+
+        assert [s.tag for s in ncx] == ["docTitle", "navLabel", "navLabel", "navLabel"]
+        assert ncx[0].source_text == "三体"
+        assert ncx[1].source_text == "第一章：三体世界"
+        assert [s.source_text for s in ncx] == [
+            "三体",
+            "第一章：三体世界",
+            "第二章：倒计时",
+            "第三章：回答",
+        ]
+
+    def test_ncx_anchors_resolve_back_to_the_text_nodes(self, fixture_epub):
+        """The anchor must be resolvable, or the label is never written back."""
+        from swatl.ingest.segmenter import parse_xml
+
+        _info, epub_dir, segments, _docs = self._extract(fixture_epub)
+        root = parse_xml(epub_dir / "toc.ncx").getroot()
+
+        for seg in segments:
+            if seg.doc != "toc.ncx":
+                continue
+            found = root.xpath(seg.anchor)
+            assert len(found) == 1, f"{seg.id}: {seg.anchor} matched {len(found)} nodes"
+            assert (found[0].text or "").strip() == seg.source_text
+
+    def test_ncx_labels_are_written_back_as_xml(self, fixture_epub, tmp_path):
+        """The exported NCX stays XML with its namespace and structure."""
+        import zipfile
+
+        from lxml import etree
+
+        from swatl.writeback import writeback_segments
+
+        _info, epub_dir, segments, _docs = self._extract(fixture_epub)
+        for seg in segments:
+            if seg.doc == "toc.ncx":
+                seg.translated = "EN " + seg.source_text
+                seg.status = "translated"
+
+        out = writeback_segments(
+            epub_dir, segments, target_lang="en", output_path=tmp_path / "o.epub"
+        )
+        with zipfile.ZipFile(out) as zf:
+            raw = zf.read("toc.ncx")
+
+        text = raw.decode("utf-8")
+        assert "<html" not in text.lower()  # not rewritten as a web page
+        root = etree.fromstring(raw)
+        ns = {"n": "http://www.daisy.org/z3986/2005/ncx/"}
+        assert root.findall(".//n:text", ns)[1].text == "EN 第一章：三体世界"
+        # Structure that readers depend on is untouched.
+        assert len(root.findall(".//n:navPoint", ns)) == 3
+        assert [c.get("src") for c in root.findall(".//n:content", ns)] == [
+            "text/ch01.xhtml",
+            "text/ch02.xhtml",
+            "text/ch03.xhtml",
+        ]

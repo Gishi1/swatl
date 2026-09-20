@@ -9,13 +9,21 @@ from pathlib import Path
 
 from lxml import html
 
-from swatl.ingest.segmenter import TAIL_MARKER, parse_xhtml
+from swatl.ingest.segmenter import TAIL_MARKER, parse_xhtml, parse_xml
 from swatl.models import Segment
 
 logger = logging.getLogger(__name__)
 
 # XHTML namespace commonly used
 XHTML_NS = "http://www.w3.org/1999/xhtml"
+
+# Documents that are XHTML and can therefore take xml:lang and a bilingual copy.
+_XHTML_SUFFIXES = (".xhtml", ".html", ".htm")
+
+
+def _is_xhtml(path: Path) -> bool:
+    """Whether *path* is an XHTML content document."""
+    return path.suffix.lower() in _XHTML_SUFFIXES
 
 
 def writeback_segments(
@@ -54,22 +62,25 @@ def writeback_segments(
             continue
 
         modified_docs.add(doc_path)
-        if bilingual:
+        # A bilingual copy only makes sense for XHTML with paragraphs: an NCX
+        # (or any other XML document) has labels, not parallel prose.
+        if bilingual and _is_xhtml(full_path):
             if bilingual_output_dir is None:
                 bilingual_output_dir = epub_dir / "bilingual"
                 bilingual_output_dir.mkdir(parents=True, exist_ok=True)
             _write_document(full_path, doc_segments, target_lang)
-            # Create bilingual copy
             _write_bilingual_doc(
                 full_path, doc_segments, target_lang, bilingual_output_dir, doc_path
             )
         else:
             _write_document(full_path, doc_segments, target_lang)
 
-    # Update language attributes on modified documents
+    # Update language attributes on modified documents. Only XHTML documents
+    # take xml:lang; running _set_lang over an NCX would parse it as HTML and
+    # rewrite the table of contents as a web page.
     for doc_path in modified_docs:
         full_path = epub_dir / doc_path
-        if full_path.exists():
+        if full_path.exists() and _is_xhtml(full_path):
             _set_lang(full_path, target_lang)
 
     # Declare the target language in the package document so readers pick the
@@ -225,10 +236,19 @@ def _write_bilingual_doc(
 
 
 def _write_document(path: Path, segments: list[Segment], target_lang: str) -> None:
-    """Replace text content in a single XHTML document and persist the result."""
-    tree = parse_xhtml(path)
+    """Replace text content in one document and persist the result.
+
+    XHTML content documents go through the tolerant HTML parser; an NCX (or any
+    other XML document) must not, because that parser drops namespaces and
+    serialises the file back as HTML.
+    """
+    if _is_xhtml(path):
+        tree = parse_xhtml(path)
+        body = tree.find(".//body")
+    else:
+        tree = parse_xml(path)
+        body = None
     root = tree.getroot()
-    body = tree.find(".//body")
     if body is None:
         body = root
 
@@ -310,7 +330,10 @@ def _replace_text(
     else:
         element.text = translated
     if target_lang:
-        element.set("xml:lang", target_lang)
+        # The Clark notation is required on a namespace-aware XML tree (an NCX),
+        # where the literal name "xml:lang" is rejected as invalid; lxml
+        # serialises this form as xml:lang on HTML trees as well.
+        element.set("{http://www.w3.org/XML/1998/namespace}lang", target_lang)
 
 
 def _set_lang(path: Path, target_lang: str) -> None:

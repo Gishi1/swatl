@@ -425,13 +425,13 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
   ones well (measured: median 0.62 for real round trips versus 0.02 for mismatched
   pairs), but short segments can still score high by coincidence. Pass
   `--metric levenshtein` for the older edit-distance ratio.
-- EPUB2 NCX (`toc.ncx`) navigation labels are not translated; EPUB3 navigation documents are.
 - Context-aware retrieval needs an embedding backend; the Ollama default requires `ollama pull bge-m3` (about 1.2 GB). Without one, translation still runs, minus the injected context.
 - The web GUI targets a single local user: it binds to `127.0.0.1` and has no authentication.
 
 ### What gets translated
 
-Spine documents, the EPUB3 navigation document, and `<head><title>` elements.
+Spine documents, the EPUB3 navigation document, the EPUB2 NCX table of contents
+(`toc.ncx`, including `<docTitle>`), and `<head><title>` elements.
 Within a document, text is handled per text node: an element's own text and the
 text that follows any element (so `<p>一行<br/>二行</p>` yields both halves).
 Text inside `script`, `style` and `svg` subtrees, and the content of images,
