@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -406,3 +407,82 @@ class TestEmbedder:
     def test_is_available_openai_no_key(self):
         embedder = Embedder(EmbedderConfig(backend="openai", api_key=""))
         assert embedder.is_available is False
+
+
+class TestFaissIndexPersistence:
+    """Index and metadata must stay aligned across save/load cycles."""
+
+    @staticmethod
+    def _vectors(n: int, dim: int = 4):
+        import random
+
+        rng = random.Random(11)
+        return [[rng.random() for _ in range(dim)] for _ in range(n)]
+
+    @staticmethod
+    def _metadata(n: int):
+        return [{"segment_id": f"s{i}", "source_text": f"文本{i}"} for i in range(n)]
+
+    def test_round_trip_keeps_metadata_aligned(self, tmp_path):
+        from swatl.context.index import FaissIndex
+
+        index = FaissIndex(dimension=4)
+        index.add(self._vectors(3), self._metadata(3))
+        index.save(tmp_path / "index.faiss")
+
+        loaded = FaissIndex(dimension=4)
+        assert loaded.load(tmp_path / "index.faiss") is True
+        assert loaded.count == 3
+        hits = loaded.query(self._vectors(1, 4)[0], k=3)
+        assert {meta["segment_id"] for _i, _s, meta in hits} <= {"s0", "s1", "s2"}
+
+    def test_missing_metadata_is_refused_instead_of_desyncing(self, tmp_path):
+        """An index without its metadata cannot be trusted."""
+        from swatl.context.index import FaissIndex
+
+        index = FaissIndex(dimension=4)
+        index.add(self._vectors(2), self._metadata(2))
+        index.save(tmp_path / "index.faiss")
+        (tmp_path / "index.json").unlink()
+
+        loaded = FaissIndex(dimension=4)
+        assert loaded.load(tmp_path / "index.faiss") is False
+        assert loaded.count == 0
+
+    def test_mismatched_metadata_is_refused(self, tmp_path):
+        from swatl.context.index import FaissIndex
+
+        index = FaissIndex(dimension=4)
+        index.add(self._vectors(3), self._metadata(3))
+        index.save(tmp_path / "index.faiss")
+        (tmp_path / "index.json").write_text(json.dumps(self._metadata(1)), encoding="utf-8")
+
+        loaded = FaissIndex(dimension=4)
+        assert loaded.load(tmp_path / "index.faiss") is False
+        assert loaded.count == 0
+
+    def test_remove_works_after_a_save_and_load(self, tmp_path):
+        """save() strips the cached vectors, so removal must not rely on them."""
+        from swatl.context.index import FaissIndex
+
+        index = FaissIndex(dimension=4)
+        index.add(self._vectors(3), self._metadata(3))
+        index.save(tmp_path / "index.faiss")
+
+        loaded = FaissIndex(dimension=4)
+        assert loaded.load(tmp_path / "index.faiss") is True
+        loaded.remove([0])
+
+        assert loaded.count == 2
+        assert {m["segment_id"] for m in loaded._metadata} == {"s1", "s2"}
+        # The rebuilt index is still queryable.
+        assert loaded.query(self._vectors(1, 4)[0], k=2)
+
+    def test_removing_everything_empties_the_index(self, tmp_path):
+        from swatl.context.index import FaissIndex
+
+        index = FaissIndex(dimension=4)
+        index.add(self._vectors(2), self._metadata(2))
+        index.remove([0, 1])
+        assert index.is_empty
+        assert index.count == 0

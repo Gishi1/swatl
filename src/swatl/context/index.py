@@ -83,10 +83,12 @@ class FaissIndex:
             return
         import numpy as np
 
-        vectors = np.array(
-            [np.array(self._metadata[i].get("_vector", []), dtype=np.float32) for i in remaining],
-            dtype=np.float32,
-        )
+        # The vectors are read back out of FAISS rather than from the metadata
+        # copy: save() strips the "_vector" field deliberately, so after a load
+        # every entry had an empty vector and the rebuild asserted. IndexFlatIP
+        # can reconstruct its vectors, so this works on a freshly built index
+        # and on one loaded from disk alike.
+        vectors = np.array([self._index.reconstruct(int(i)) for i in remaining], dtype=np.float32)
         metadata = [self._metadata[i] for i in remaining]
         self._metadata = metadata
         self._rebuild(vectors)
@@ -190,14 +192,33 @@ class FaissIndex:
         if load_path is None or not load_path.exists():
             return False
         try:
-            self._index = faiss.read_index(str(load_path))
-            self.dimension = self._index.d
+            index = faiss.read_index(str(load_path))
             meta_path = load_path.with_suffix(".json")
+            metadata: list[dict[str, Any]] = []
             if meta_path.exists():
                 import json
 
                 with open(meta_path, encoding="utf-8") as f:
-                    self._metadata = json.load(f)
+                    metadata = json.load(f)
+
+            # One metadata row per vector is an invariant of every read path: a
+            # missing or stale metadata file used to load "successfully" with an
+            # empty list, after which the next add() bound metadata to the wrong
+            # vectors and queries returned another entry's text.
+            if len(metadata) != index.ntotal:
+                logger.error(
+                    "Refusing to load %s: %d vectors but %d metadata rows",
+                    load_path,
+                    index.ntotal,
+                    len(metadata),
+                )
+                self._index = None
+                self._metadata = []
+                return False
+
+            self._index = index
+            self.dimension = index.d
+            self._metadata = metadata
             logger.info(
                 "Loaded FAISS index (%d vectors, dim=%d) from %s",
                 self.count,
