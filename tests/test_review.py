@@ -308,3 +308,54 @@ def test_review_includes_proofread_segments(tmp_path):
     session.load_segments()
     assert session.total == 2
     assert {item.segment.id for item in session.review_items} == {"p-0001", "p-0002"}
+
+
+class TestReviewSummaryCounts:
+    """The summary must count segments acted on, not segments loaded."""
+
+    @staticmethod
+    def _reviewer(tmp_path):
+        from swatl.review.reviewer import ReviewSession
+        from swatl.state import SegmentStore
+
+        store = SegmentStore(tmp_path)
+        segments = [
+            Segment(
+                id=f"p-{i:04d}",
+                doc="d",
+                anchor=f"./p[{i}]",
+                tag="p",
+                source_text=f"中文{i}",
+                translated=f"English {i}",
+                status="translated",
+            )
+            for i in range(1, 4)
+        ]
+        store.append_many(segments)
+        return ReviewSession(store=store)
+
+    def test_quitting_early_does_not_claim_everything_was_reviewed(self, tmp_path):
+        reviewer = self._reviewer(tmp_path)
+        reviewer.load_segments()
+        reviewer.accept()  # one of three
+
+        summary = reviewer.summary()
+        assert "1 of 3" in summary
+
+    def test_all_actions_are_counted(self, tmp_path):
+        reviewer = self._reviewer(tmp_path)
+        reviewer.load_segments()
+        reviewer.accept()
+        reviewer.next_item()
+        reviewer.skip()
+        reviewer.next_item()
+        reviewer.edit("Better English")
+
+        assert reviewer.reviewed == 3
+        assert "3 of 3" in reviewer.summary()
+
+    def test_nothing_reviewed_says_so(self, tmp_path):
+        """With no actions there is nothing to count, and the summary says that."""
+        reviewer = self._reviewer(tmp_path)
+        reviewer.load_segments()
+        assert reviewer.summary() == "No review actions taken."

@@ -786,3 +786,88 @@ class TestTransientFailuresAreRetried:
 
         assert attempts["n"] == 3
         assert result[0].status == SegmentStatus.FAILED
+
+
+class TestEchoedExampleIsIgnored:
+    """A model that repeats the prompt's example must not fool the parser."""
+
+    def test_placeholder_after_the_real_map_is_rejected(self, monkeypatch):
+        """Merging objects must not let a trailing example overwrite the answer.
+
+        Only objects that carry a real value win; the placeholder is refused.
+        """
+        content = json.dumps({"p-0001": "Hello"})
+        _patch_transport(monkeypatch, lambda request: _chat_response(content))
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+        assert result[0].translated == "Hello"
+
+    def test_echoed_example_before_the_real_map_still_translates(self, monkeypatch):
+        """The response opens with the example object, then the real answer."""
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _chat_response(
+                    'Example shape: {"p-0001": "<translation>"}\n'
+                    + json.dumps({"p-0001": "The real answer"})
+                )
+            return _chat_response(json.dumps({"translated": "fallback"}))
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].translated == "The real answer"
+        assert "<translation>" not in (result[0].translated or "")
+
+    def test_only_an_echoed_example_fails_rather_than_storing_it(self, monkeypatch):
+        """Nothing usable came back, so the segment must be FAILED."""
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _chat_response(json.dumps({"p-0001": "<translation>"}))
+            return _chat_response(json.dumps({"p-0001": "<translation>"}))
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].translated is None
+        assert result[0].status == SegmentStatus.FAILED
+
+
+class TestMultiLineSseEvents:
+    """The SSE spec joins a split event's data lines before parsing."""
+
+    def test_split_data_lines_are_assembled(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=(
+                    'data: {"choices":[{"delta":\ndata: {"content":"Hello"}}]}\n\ndata: [DONE]\n\n'
+                ),
+            )
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].translated == "Hello"
+
+    def test_multiple_events_are_concatenated(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=(
+                    'data: {"choices":[{"delta":{"content":"He"}}]}\n\n'
+                    'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].translated == "Hello"

@@ -41,6 +41,7 @@ class ReviewSession:
     review_items: list[ReviewItem] = field(default_factory=list)
     current_index: int = 0
     total: int = 0
+    reviewed: int = 0
 
     def load_segments(self) -> None:
         """Load every segment that has a translation and audit them.
@@ -102,6 +103,7 @@ class ReviewSession:
             notes=f"Accepted as-is (status={seg.status})",
         )
         self.results.append(result)
+        self.reviewed += 1
         return result
 
     def edit(self, new_text: str) -> ReviewResult:
@@ -120,6 +122,7 @@ class ReviewSession:
             notes=f"Edited to {len(new_text)} chars (status={seg.status})",
         )
         self.results.append(result)
+        self.reviewed += 1
         return result
 
     def skip(self) -> ReviewResult:
@@ -136,6 +139,7 @@ class ReviewSession:
             notes=f"Skipped (status={seg.status})",
         )
         self.results.append(result)
+        self.reviewed += 1
         return result
 
     def regenerate(self) -> ReviewResult:
@@ -156,6 +160,7 @@ class ReviewSession:
             notes="Marked for re-translation",
         )
         self.results.append(result)
+        self.reviewed += 1
         return result
 
     def done(self) -> list[ReviewResult]:
@@ -175,7 +180,7 @@ class ReviewSession:
         actions: dict[str, int] = {}
         for r in self.results:
             actions[r.action] = actions.get(r.action, 0) + 1
-        lines = [f"Review session complete: {self.total} segments reviewed"]
+        lines = [f"Review session complete: {self.reviewed} of {self.total} segments reviewed"]
         for action, count in sorted(actions.items()):
             lines.append(f"  {action}: {count}")
         return "\n".join(lines)

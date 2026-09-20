@@ -205,16 +205,22 @@ _EN_LANGS = {"en", "en-us", "en-gb", "en-au"}
 def build_segment_anchor(body: Any, element: Any) -> str:
     """Build an XPath anchor to *element*.
 
-    Elements inside ``<body>`` get a relative anchor such as ``.//p[4]``
+    Elements inside ``<body>`` get a relative anchor such as ``./p[4]``
     (resolved with ``body.xpath(...)``). Elements outside it — the document
     ``<title>``, for instance — get an absolute anchor such as
     ``/html/head/title[1]`` (resolved with ``root.xpath(...)``).
 
-    The index is the element's position among its *siblings* of the same tag,
-    which is exactly what ``body.xpath(".//p[4]")`` resolves back to. Counting
-    descendants instead used to produce anchors such as ``.//p[5]`` for a
-    document that only has four ``<p>`` children of ``<body>``, so write-back
-    silently skipped those segments.
+    Every step is a *child* step (``./blockquote[1]/p[1]``), so the anchor
+    resolves to exactly one element. The index is the element's position among
+    its siblings of the same tag, which is what XPath's ``p[4]`` means.
+
+    Two earlier mistakes are worth recording. Counting descendants instead of
+    siblings produced anchors such as ``.//p[5]`` for a document with only four
+    ``<p>`` children of ``<body>``, so write-back silently skipped those
+    segments. Using ``.//`` then made anchors ambiguous: ``.//p[1]`` matches the
+    first paragraph of *every* parent, so a nested paragraph that happened to
+    carry the same text could be overwritten with a body-level translation
+    while the intended paragraph kept its source language.
     """
     # Walk up until we reach <body> (relative anchor) or the document root.
     ancestors = []
@@ -230,7 +236,7 @@ def build_segment_anchor(body: Any, element: Any) -> str:
     ancestors.reverse()
     if inside_body:
         ancestors = ancestors[1:]  # exclude body itself
-        prefix = ".//"
+        prefix = "./"
     else:
         prefix = "/"
 

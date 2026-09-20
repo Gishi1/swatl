@@ -187,8 +187,8 @@ class TestAnchorResolution:
         anchors = [s.anchor for s in segments]
         assert len(set(anchors)) == len(anchors), anchors
         # The paragraph inside <blockquote> must not consume a body-level index.
-        assert ".//blockquote[1]/p[1]" in anchors
-        assert ".//p[4]" in anchors
+        assert "./blockquote[1]/p[1]" in anchors
+        assert "./p[4]" in anchors
 
 
 class TestNavigationAndTitleSegmentation:
@@ -476,3 +476,41 @@ class TestEpub2NcxSegmentation:
             "text/ch02.xhtml",
             "text/ch03.xhtml",
         ]
+
+    def test_every_anchor_resolves_to_exactly_one_element(self, tmp_path):
+        """An ambiguous anchor can overwrite the wrong paragraph.
+
+        The previous ".//p[1]" form matches the first <p> of *every* parent, so
+        with two paragraphs of identical text the nested one could be
+        overwritten while the body-level paragraph kept its source language.
+        """
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = tmp_path / "d.xhtml"
+        doc.write_text(
+            "<html><body>"
+            "<blockquote><p>相同的一段话</p></blockquote>"
+            "<p>相同的一段话</p>"
+            "<blockquote><p>相同的一段话</p></blockquote>"
+            "<p>结束</p>"
+            "</body></html>",
+            encoding="utf-8",
+        )
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        for seg in segments:
+            found = body.xpath(seg.anchor)
+            assert len(found) == 1, f"{seg.id}: {seg.anchor} matched {len(found)} elements"
+            assert (found[0].text or "").strip() == seg.source_text
+
+    def test_duplicate_text_paragraphs_get_distinct_anchors(self, tmp_path):
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = tmp_path / "d.xhtml"
+        doc.write_text("<html><body><p>一样的</p><p>一样的</p></body></html>", encoding="utf-8")
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        anchors = [s.anchor for s in segments if s.tag == "p"]
+        assert anchors == ["./p[1]", "./p[2]"]

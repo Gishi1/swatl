@@ -14,10 +14,24 @@ logger = logging.getLogger(__name__)
 
 
 class TranslationMemory:
-    """In-memory + on-disk translation memory using segment hash as key."""
+    """In-memory + on-disk translation memory using segment hash as key.
 
-    def __init__(self, memory_file: Path | None = None, max_entries: int = 100_000) -> None:
+    The key covers the language direction as well as the source text. Keying on
+    the text alone meant a memory file reused with a different ``--target``
+    returned the other language's cached text and reported those segments as
+    translated without ever calling a model.
+    """
+
+    def __init__(
+        self,
+        memory_file: Path | None = None,
+        max_entries: int = 100_000,
+        source_lang: str = "",
+        target_lang: str = "",
+    ) -> None:
         self.max_entries = max_entries
+        self.source_lang = source_lang
+        self.target_lang = target_lang
         self._mem_cache: dict[str, str] = {}  # hash → translation
         if memory_file is not None:
             self._memory_file = Path(memory_file)
@@ -26,8 +40,9 @@ class TranslationMemory:
             self._memory_file = None
 
     def _hash(self, source_text: str) -> str:
-        """Compute a short hash of the source text."""
-        return hashlib.sha256(source_text.encode("utf-8")).hexdigest()[:16]
+        """Compute a short hash of the language direction and the source text."""
+        key = f"{self.source_lang}\x00{self.target_lang}\x00{source_text}"
+        return hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
 
     def _load_disk_cache(self) -> None:
         """Load TM entries from disk JSON file."""
@@ -51,7 +66,12 @@ class TranslationMemory:
         self._memory_file.parent.mkdir(parents=True, exist_ok=True)
         entries: dict[str, dict[str, Any]] = {}
         for h, t in self._mem_cache.items():
-            entries[h] = {"hash": h, "translation": t}
+            entries[h] = {
+                "hash": h,
+                "translation": t,
+                "source_lang": self.source_lang,
+                "target_lang": self.target_lang,
+            }
         with open(self._memory_file, "w", encoding="utf-8") as f:
             json.dump(entries, f, indent=2, ensure_ascii=False)
         logger.info("Saved %d TM entries to disk", len(self._mem_cache))

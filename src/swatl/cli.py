@@ -411,7 +411,7 @@ def translate(
         from swatl.translate.translation_memory import TranslationMemory
 
         tm_path = Path(translation_memory)
-        tm = TranslationMemory(memory_file=tm_path)
+        tm = TranslationMemory(memory_file=tm_path, source_lang=info.language, target_lang=target)
         trans.translation_memory = tm
         console.print(f"[bold]Translation memory loaded: {tm.count()} entries[/bold]")
 

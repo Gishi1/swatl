@@ -147,3 +147,76 @@ def test_glossary_hits_are_recorded():
     seg = result[0]
     assert "Three-Body" in (seg.translated or "")
     assert seg.glossary_hits == ["三体"]
+
+
+class TestTranslationMemoryLanguageScoping:
+    """A memory file must not serve another language's cached text."""
+
+    @staticmethod
+    def _seg() -> Segment:
+        return Segment(
+            id="p-0001",
+            doc="d",
+            anchor="./p[1]",
+            tag="p",
+            source_text="红岸基地",
+            translated="Red Coast Base",
+            status="translated",
+        )
+
+    def test_entries_are_scoped_to_the_target_language(self, tmp_path):
+        from swatl.translate.translation_memory import TranslationMemory
+
+        memory_file = tmp_path / "tm.json"
+        english = TranslationMemory(memory_file, source_lang="zh", target_lang="en")
+        english.add(self._seg())
+        english.save_disk_cache()
+
+        # Reusing the same file for another target must not return English.
+        french = TranslationMemory(memory_file, source_lang="zh", target_lang="fr")
+        assert french.lookup(self._seg()) is None
+
+        # The original direction still hits.
+        again = TranslationMemory(memory_file, source_lang="zh", target_lang="en")
+        assert again.lookup(self._seg()) == "Red Coast Base"
+
+    def test_source_language_is_part_of_the_key(self, tmp_path):
+        from swatl.translate.translation_memory import TranslationMemory
+
+        memory_file = tmp_path / "tm.json"
+        zh = TranslationMemory(memory_file, source_lang="zh", target_lang="en")
+        zh.add(self._seg())
+        zh.save_disk_cache()
+
+        ja = TranslationMemory(memory_file, source_lang="ja", target_lang="en")
+        assert ja.lookup(self._seg()) is None
+
+
+class TestMockProviderGlossaryMarkers:
+    """The offline test provider must not leak its internal markers."""
+
+    def test_ascii_term_marker_is_unwrapped(self):
+        from swatl.providers.mock import _mock_translate
+
+        glossary = Glossary(
+            name="t",
+            pair=["zh", "en"],
+            entries=[GlossaryEntry(source="Sophon", target="Zhi Zi")],
+        )
+        result = _mock_translate("The Sophon is here.", glossary)
+
+        assert "<<" not in result
+        assert "[Zhi Zi]" in result
+
+    def test_cjk_text_still_uses_markers(self):
+        from swatl.providers.mock import _mock_translate
+
+        glossary = Glossary(
+            name="t",
+            pair=["zh", "en"],
+            entries=[GlossaryEntry(source="红岸基地", target="Red Coast Base")],
+        )
+        result = _mock_translate("红岸基地。", glossary)
+
+        assert "<<" not in result
+        assert "[Red Coast Base]" in result

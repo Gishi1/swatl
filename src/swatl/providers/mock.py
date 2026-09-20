@@ -71,9 +71,15 @@ def _mock_translate(text: str, glossary: Glossary | None) -> str:
             if entry.source in text:
                 text = text.replace(entry.source, f"<<{entry.target}>>")
 
-    # If the text has no CJK characters, just return "Translated: {text}"
+    # If the text has no CJK characters, just return "Translated: {text}". Any
+    # glossary markers substituted above still have to be unwrapped, otherwise a
+    # pure-ASCII term leaked through as "Translated: The <<Zhi Zi>> is here."
     if not any("\u4e00" <= c <= "\u9fff" for c in text):
-        return f"Translated: {text}"
+        result = f"Translated: {text}"
+        if glossary and glossary.entries:
+            for entry in glossary.entries:
+                result = result.replace(f"<<{entry.target}>>", f"[{entry.target}]")
+        return result
 
     # CJK text: return a deterministic mock translation
     result_parts = []

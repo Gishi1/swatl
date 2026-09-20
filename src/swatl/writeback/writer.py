@@ -272,8 +272,9 @@ def _write_document(path: Path, segments: list[Segment], target_lang: str) -> No
                 logger.warning("Anchor not found for segment %s: %s", seg.id, seg.anchor)
                 continue
 
-            # Prefer the match whose text is the segment's source; a relative
-            # anchor like ".//p[1]" can also match a nested first paragraph.
+            # Anchors are unambiguous child steps, so this normally finds one
+            # element; the source-text check stays as a safety net for anchors
+            # stored by older versions (which used the ambiguous ".//p[1]").
             element = elements[0]
             if len(elements) > 1:
                 source = seg.source_text.strip()

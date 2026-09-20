@@ -36,6 +36,65 @@ def _retry_delay_seconds(response: httpx.Response, default: float) -> float:
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
+# The prompts show an example object; a model that repeats it verbatim must not
+# have the placeholder stored as a translation. "<translation>" comes from the
+# batch and single-segment prompts, "improved version" from the proofread one.
+PLACEHOLDER_VALUES = frozenset({"<translation>", "improved version", "..."})
+
+
+def extract_json_objects(text: str) -> list[dict[str, Any]]:
+    """Every JSON object found in *text*, in the order they appear.
+
+    Models sometimes print the prompt's example object before the real answer,
+    so a caller that reads only the first object can pick up the placeholders.
+    """
+    if not text:
+        return []
+
+    found: list[dict[str, Any]] = []
+    cursor = 0
+    while cursor < len(text):
+        start = text.find("{", cursor)
+        if start == -1:
+            break
+
+        depth = 0
+        in_string = False
+        escaped = False
+        end = -1
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+
+        if end == -1:
+            break
+        try:
+            candidate = json.loads(text[start:end])
+        except json.JSONDecodeError:
+            cursor = start + 1
+            continue
+        if isinstance(candidate, dict):
+            found.append(candidate)
+        cursor = end
+
+    return found
+
 
 def extract_json_object(text: str) -> dict[str, Any] | None:
     """Best-effort extraction of a single JSON object from an LLM response.
@@ -174,17 +233,22 @@ def _collect_sse_content(body: str) -> str:
     Reasoning deltas are ignored; only ``delta.content`` is concatenated.
     """
     parts: list[str] = []
-    for line in body.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[len("data:") :].strip()
-        if not payload or payload == "[DONE]":
-            continue
+    # An SSE event is a run of `data:` lines terminated by a blank line, and the
+    # spec says to join their values with newlines before parsing. Parsing each
+    # line on its own silently dropped every event a gateway split across lines.
+    event: list[str] = []
+
+    def flush_event() -> None:
+        if not event:
+            return
+        payload = "\n".join(event)
+        event.clear()
+        if not payload.strip() or payload.strip() == "[DONE]":
+            return
         try:
             chunk = json.loads(payload)
         except json.JSONDecodeError:
-            continue
+            return
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") or {}
             piece = delta.get("content")
@@ -194,6 +258,15 @@ def _collect_sse_content(body: str) -> str:
                 message_content = choice["message"].get("content")
                 if message_content:
                     parts.append(message_content)
+
+    for line in body.splitlines():
+        if not line.strip():
+            flush_event()
+            continue
+        if not line.startswith("data:"):
+            continue  # comments, event:, id:, retry:
+        event.append(line[len("data:") :].strip())
+    flush_event()
     return "".join(parts)
 
 
@@ -441,14 +514,14 @@ class OpenAICompatible(Provider):
             value = value.get("translated")
         if isinstance(value, str):
             cleaned = _clean_translation(value)
-            if cleaned:
+            if cleaned and cleaned.strip() not in PLACEHOLDER_VALUES:
                 return cleaned
         # A single-segment response may use the flat {"translated": ...} shape.
         if batch_size == 1:
             flat = mapping.get("translated")
             if isinstance(flat, str):
                 cleaned = _clean_translation(flat)
-                if cleaned:
+                if cleaned and cleaned.strip() not in PLACEHOLDER_VALUES:
                     return cleaned
         return None
 
@@ -497,7 +570,12 @@ class OpenAICompatible(Provider):
                         results.append(seg)
                     continue
 
-                mapping = extract_json_object(content) or {}
+                # Merge every object in the response: a model may print the
+                # prompt's example object before the real map, and reading only
+                # the first one stored "<translation>" for every segment.
+                mapping: dict[str, Any] = {}
+                for candidate in extract_json_objects(content):
+                    mapping.update(candidate)
                 usage_in = int(usage.get("prompt_tokens", 0) or 0)
                 usage_out = int(usage.get("completion_tokens", 0) or 0)
 
@@ -610,13 +688,13 @@ class OpenAICompatible(Provider):
             translation = mapping.get("translated")
             if isinstance(translation, str):
                 cleaned = _clean_translation(translation)
-                if cleaned:
+                if cleaned and cleaned.strip() not in PLACEHOLDER_VALUES:
                     return cleaned
             # The model may answer with the batch shape even for one segment.
             value = mapping.get(seg.id)
             if isinstance(value, str):
                 cleaned = _clean_translation(value)
-                if cleaned:
+                if cleaned and cleaned.strip() not in PLACEHOLDER_VALUES:
                     return cleaned
             # A JSON object with nothing usable must not become the
             # translation: storing the envelope itself put
@@ -671,7 +749,11 @@ class OpenAICompatible(Provider):
                 mapping = extract_json_object(content)
                 if mapping is not None:
                     improved = mapping.get("translated")
-                    if isinstance(improved, str) and improved.strip():
+                    if (
+                        isinstance(improved, str)
+                        and improved.strip()
+                        and improved.strip() not in PLACEHOLDER_VALUES
+                    ):
                         seg.translated = improved.strip()
                         seg.status = SegmentStatus.PROOFREAD
                 results.append(seg)
