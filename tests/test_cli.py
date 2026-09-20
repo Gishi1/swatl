@@ -454,11 +454,31 @@ class TestBackTranslateMetricFallback:
         )
         return tmp_path
 
-    def _run(self, tmp_path, monkeypatch, extra):
+    def _run(self, tmp_path, monkeypatch, extra, stub_embedding: bool = False):
         from typer.testing import CliRunner
 
         from swatl.quality import back_translation
         from swatl.quality.back_translation import BackTranslationReport, BackTranslationResult
+
+        if stub_embedding:
+            # Do not depend on an embedding server being reachable: this test is
+            # about the metric being threaded through, not about Ollama.
+            from dataclasses import dataclass
+
+            from swatl.context import EmbedderConfig
+
+            @dataclass
+            class _Resolution:
+                config: object
+                reason: str
+
+            def fake_resolve(**kwargs):
+                return _Resolution(
+                    config=EmbedderConfig(backend="ollama", model="bge-m3", dimension=1024),
+                    reason="stubbed",
+                )
+
+            monkeypatch.setattr("swatl.context.resolve_embedding_config", fake_resolve)
 
         seen = {}
 
@@ -518,7 +538,9 @@ class TestBackTranslateMetricFallback:
 
     def test_reachable_backend_is_used(self, tmp_path, monkeypatch):
         """With a working backend the semantic metric is passed through."""
-        result, seen = self._run(tmp_path, monkeypatch, ["--metric", "semantic"])
+        result, seen = self._run(
+            tmp_path, monkeypatch, ["--metric", "semantic"], stub_embedding=True
+        )
 
         assert result.exit_code == 0, result.output
         assert seen.get("metric") == "semantic"
