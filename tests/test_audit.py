@@ -272,3 +272,90 @@ class TestEmptyTranslationIsAudited:
         seg.status = "pending"
         report = audit_segments([seg])
         assert [i for i in report.issues if i.type == "empty"] == []
+
+
+class TestNewAuditChecks:
+    """Checks for the two failure modes this project has actually hit."""
+
+    @staticmethod
+    def _seg(sid: str, source: str, translated: str) -> Segment:
+        return Segment(
+            id=sid,
+            doc="doc",
+            anchor=f"./p[{sid[-1]}]",
+            tag="p",
+            source_text=source,
+            translated=translated,
+            status="translated",
+        )
+
+    def test_unchanged_translation_is_an_error(self):
+        report = audit_segments(
+            [self._seg("p-0001", "红岸基地是一座秘密设施。", "红岸基地是一座秘密设施。")]
+        )
+        issues = [i for i in report.issues if i.type == "untranslated"]
+        assert len(issues) == 1
+        assert issues[0].severity == "error"
+        assert report.has_critical_issues()
+
+    def test_unchanged_text_without_cjk_is_not_reported(self):
+        """A number or a name has nothing to translate."""
+        report = audit_segments([self._seg("p-0001", "2024", "2024")])
+        assert [i for i in report.issues if i.type == "untranslated"] == []
+
+    def test_changed_number_is_reported(self):
+        report = audit_segments([self._seg("p-0001", "他在1987年到达。", "He arrived in 1997.")])
+        issues = [i for i in report.issues if i.type == "number_mismatch"]
+        assert len(issues) == 1
+        assert "1987" in issues[0].detail and "1997" in issues[0].detail
+
+    def test_matching_numbers_are_not_reported(self):
+        report = audit_segments([self._seg("p-0001", "他在1987年到达。", "He arrived in 1987.")])
+        assert [i for i in report.issues if i.type == "number_mismatch"] == []
+
+    def test_dropped_number_is_reported(self):
+        report = audit_segments([self._seg("p-0001", "第27号文件", "The document")])
+        assert [i for i in report.issues if i.type == "number_mismatch"]
+
+    def test_duplicate_translation_for_different_sources_is_an_error(self):
+        """The smearing bug: one response reused for every segment."""
+        shared = "Red Coast Base is a secret facility of great importance."
+        segments = [
+            self._seg("p-0001", "红岸基地是一座秘密设施。", shared),
+            self._seg("p-0002", "叶文洁站在窗前。", shared),
+            self._seg("p-0003", "宇宙很大。", shared),
+        ]
+        report = audit_segments(segments)
+
+        duplicates = [i for i in report.issues if i.type == "duplicate_translation"]
+        assert len(duplicates) == 2  # the 2nd and 3rd share the 1st's text
+        assert duplicates[0].segment_id == "p-0002"
+        assert "p-0001" in duplicates[0].detail
+
+    def test_repeated_short_translation_is_fine(self):
+        segments = [
+            self._seg("p-0001", "是的。", "Yes."),
+            self._seg("p-0002", "好的。", "Yes."),
+        ]
+        report = audit_segments(segments)
+        assert [i for i in report.issues if i.type == "duplicate_translation"] == []
+
+    def test_same_source_repeated_is_fine(self):
+        """A refrain legitimately has the same source and translation."""
+        shared = "不要回答！不要回答！不要回答！"
+        segments = [
+            self._seg("p-0001", shared, "Do not answer! Do not answer!"),
+            self._seg("p-0002", shared, "Do not answer! Do not answer!"),
+        ]
+        report = audit_segments(segments)
+        assert [i for i in report.issues if i.type == "duplicate_translation"] == []
+
+    def test_summary_groups_the_new_types(self):
+        shared = "The same sentence appears here for both segments."
+        report = audit_segments(
+            [
+                self._seg("p-0001", "红岸基地。", shared),
+                self._seg("p-0002", "叶文洁。", shared),
+            ]
+        )
+        assert "duplicate_translation" in report.summary()

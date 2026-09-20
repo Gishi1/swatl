@@ -12,7 +12,9 @@ from swatl.models import Glossary, Segment
 class AuditIssue:
     """A single quality issue found during audit."""
 
-    type: str  # "cjk_residue", "omission", "glossary_miss", "empty", "short"
+    # "cjk_residue", "omission", "glossary_miss", "empty", "short",
+    # "untranslated", "number_mismatch", "duplicate_translation"
+    type: str
     segment_id: str
     doc: str
     detail: str
@@ -191,7 +193,38 @@ def audit_segments(
                         )
                     )
 
-        # 4. Empty or trivially short
+        # 4. Left in the source language: an unchanged segment was never
+        #    translated. Only meaningful when there was something to translate,
+        #    so a source without CJK (a number, a name) is not reported.
+        if seg.source_text.strip() and text.strip() == seg.source_text.strip():
+            if _count_cjk_chars(seg.source_text, source_lang) > 0:
+                report.issues.append(
+                    AuditIssue(
+                        type="untranslated",
+                        segment_id=seg.id,
+                        doc=seg.doc,
+                        detail="Translation is identical to the source text",
+                        severity="error",
+                    )
+                )
+
+        # 5. Numbers that changed between source and translation. Digits carry
+        #    meaning that a rewrite silently alters (a date, a quantity, an
+        #    equation number), so a difference is worth a look.
+        source_digits = _digit_groups(seg.source_text)
+        if source_digits and _digit_groups(text) != source_digits:
+            report.issues.append(
+                AuditIssue(
+                    type="number_mismatch",
+                    segment_id=seg.id,
+                    doc=seg.doc,
+                    detail=f"source has {sorted(source_digits)}, translation has "
+                    f"{sorted(_digit_groups(text))}",
+                    severity="warning",
+                )
+            )
+
+        # 6. Empty or trivially short
         if not text.strip():
             report.issues.append(
                 AuditIssue(
@@ -213,4 +246,46 @@ def audit_segments(
                 )
             )
 
+    _report_duplicate_translations(report, segments)
+
     return report
+
+
+def _digit_groups(text: str) -> set[str]:
+    """Distinct runs of digits in *text* (trailing punctuation excluded)."""
+    return set(re.findall(r"\d+", text or ""))
+
+
+def _report_duplicate_translations(report: AuditReport, segments: list[Segment]) -> None:
+    """Flag different source segments that share one identical translation.
+
+    This is the signature of a batch request whose response was smeared across
+    its segments — every paragraph ends up with the same sentence — and it is
+    almost impossible to spot by reading a single segment. Short strings are
+    ignored: "Yes." or "Chapter 1" legitimately repeat.
+    """
+    seen: dict[str, Segment] = {}
+    reported: set[str] = set()
+    for seg in segments:
+        text = (seg.translated or "").strip()
+        if len(text) < 12:
+            continue
+        previous = seen.get(text)
+        if previous is None:
+            seen[text] = seg
+            continue
+        if previous.source_text.strip() == (seg.source_text or "").strip():
+            continue  # the same source repeated is legitimate
+        key = f"{previous.id}|{seg.id}"
+        if key in reported:
+            continue
+        reported.add(key)
+        report.issues.append(
+            AuditIssue(
+                type="duplicate_translation",
+                segment_id=seg.id,
+                doc=seg.doc,
+                detail=f"identical translation also used for {previous.id}",
+                severity="error",
+            )
+        )

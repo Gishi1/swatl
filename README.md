@@ -40,7 +40,7 @@ is supported, and new pairs are a configuration change rather than a code change
 | **Pluggable backends** | OpenAI, DeepSeek, Anthropic, DashScope or a local Ollama server — plus an offline `mock` provider for testing. |
 | **Glossary control** | Pin terminology once and apply it consistently across the whole book. |
 | **Proofreading pass** | A second LLM pass for grammar, style and naturalness. |
-| **Quality audit** | CJK-residue, omission and glossary-compliance heuristics. |
+| **Quality audit** | Flags CJK residue, empty or unchanged translations, changed numbers, glossary misses, impossible length ratios, and one translation reused across different segments (the signature of a smeared batch response). |
 | **Interactive review** | Search, filter, edit, accept, skip or requeue individual segments in the browser. |
 | **Semantic context injection** | Curated entries are embedded (Ollama by default) and the nearest ones are added to every translation prompt. |
 | **Translation memory** | Disk-backed cache, reused across runs and books. |
@@ -81,7 +81,7 @@ export DEEPSEEK_API_KEY=sk-...      # the variable named by api_key_env
 # 2. Translate a book
 uv run swatl translate book.epub --target en --provider deepseek --state ./state
 
-# 3. Proofread, then audit
+# 3. Proofread, then audit (see "What the audit checks" below)
 uv run swatl proofread --state ./state --provider deepseek
 uv run swatl audit --state ./state
 
@@ -437,7 +437,12 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
 
 ## Known limitations
 
-- The quality audit is heuristic: it flags likely problems, it does not prove correctness.
+- The quality audit is heuristic: it flags likely problems, it does not prove
+  correctness. It checks for CJK residue in the output, empty translations,
+  translations identical to their source, numbers that changed between source and
+  translation, glossary terms that are missing, length ratios too low to be
+  plausible, and one translation reused for unrelated segments. A clean report
+  means nothing obvious is wrong, not that the translation is good.
 - Back-translation similarity uses chrF, the standard character n-gram metric — a
   string metric, not a learned one. It separates faithful round trips from wrong
   ones well (measured: median 0.62 for real round trips versus 0.02 for mismatched
