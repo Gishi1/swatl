@@ -567,3 +567,92 @@ class TestTokenUrlEncoding:
         # URLSearchParams in the GUI decodes this back to the original token.
         assert "AbC%2B%2Fxy%26z" in result.output
         assert started["token"] == "AbC+/xy&z"
+
+
+class TestExportFailureHandling:
+    """Export problems should be explained, not traceback."""
+
+    @staticmethod
+    def _state_with_run(tmp_path, epub_path):
+        from swatl.models import RunMetadata, Segment
+        from swatl.state import SegmentStore
+
+        store = SegmentStore(tmp_path)
+        store.append_many(
+            [
+                Segment(
+                    id="p-0001",
+                    doc="ch.xhtml",
+                    anchor="./p[1]",
+                    tag="p",
+                    source_text="红岸基地",
+                    translated="Red Coast Base",
+                    status="translated",
+                )
+            ]
+        )
+        store.save_run(
+            RunMetadata(
+                book_title="t",
+                book_author=None,
+                book_lang="zh",
+                book_version="EPUB 2.0",
+                pair=["zh", "en"],
+                provider="mock",
+                epub_path=str(epub_path),
+                state_dir=str(tmp_path / "_epub"),
+                created_at="2026-01-01T00:00:00+00:00",
+                updated_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+        return tmp_path
+
+    def test_unreadable_source_epub_is_reported(self, tmp_path):
+        from typer.testing import CliRunner
+
+        book = tmp_path / "broken.epub"
+        book.write_text("not a zip at all", encoding="utf-8")
+        state = self._state_with_run(tmp_path, book)
+
+        result = CliRunner().invoke(
+            app, ["export", "--state", str(state), "-o", str(tmp_path / "o.epub")]
+        )
+
+        assert result.exit_code == 1
+        assert "Could not read" in result.output
+
+    def test_missing_source_epub_is_reported(self, tmp_path):
+        from typer.testing import CliRunner
+
+        state = self._state_with_run(tmp_path, tmp_path / "gone.epub")
+
+        result = CliRunner().invoke(
+            app, ["export", "--state", str(state), "-o", str(tmp_path / "o.epub")]
+        )
+
+        assert result.exit_code == 1
+        assert "Source EPUB not found" in result.output
+
+    def test_export_succeeds_and_leaves_no_scratch_directory(self, tmp_path, monkeypatch):
+        """The temporary extraction must be cleaned up on the way out."""
+        import glob
+        import sys
+        import tempfile
+
+        from typer.testing import CliRunner
+
+        sys.path.insert(0, "tests/fixtures")
+        from create_fixture import create_fixture_epub
+
+        book = create_fixture_epub(tmp_path / "book.epub")
+        state = self._state_with_run(tmp_path, book)
+
+        before = set(glob.glob(str(Path(tempfile.gettempdir()) / "swatl-export-*")))
+        result = CliRunner().invoke(
+            app, ["export", "--state", str(state), "-o", str(tmp_path / "out.epub")]
+        )
+        after = set(glob.glob(str(Path(tempfile.gettempdir()) / "swatl-export-*")))
+
+        assert result.exit_code == 0, result.output
+        assert (tmp_path / "out.epub").exists()
+        assert after == before, f"leftover scratch dirs: {after - before}"

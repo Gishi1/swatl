@@ -690,6 +690,12 @@ def export(
         scratch = tempfile.mkdtemp(prefix="swatl-export-")
         try:
             _, epub_dir = extract_epub(src_epub, output_dir=scratch)
+        except Exception as e:
+            shutil.rmtree(scratch, ignore_errors=True)
+            console.print(f"[red]Could not read {src_epub}: {e}[/red]")
+            raise SystemExit(1) from e
+
+        try:
             result_path = writeback_segments(
                 epub_dir,
                 segments_list,
@@ -697,6 +703,9 @@ def export(
                 output_path=output,
                 bilingual=bilingual,
             )
+        except Exception as e:
+            console.print(f"[red]Export failed: {e}[/red]")
+            raise SystemExit(1) from e
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     elif previous.exists():
