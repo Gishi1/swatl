@@ -58,7 +58,12 @@ def chunk_text(
                 if newline > chunk_size * 0.5:
                     end = start + newline + 1
                     chunk = text[start:end]
-        chunks.append(chunk.strip())
+        stripped = chunk.strip()
+        if not stripped:
+            # A whitespace run longer than the chunk size produced an empty
+            # entry, which is stored but can never be retrieved.
+            continue
+        chunks.append(stripped)
         # Advance: next start is after current end minus overlap, always
         # moving forward by at least one character.
         next_start = end - overlap if end < len(text) else len(text)
@@ -134,13 +139,19 @@ def parse_csv_entries(content: str, delimiter: str = ",") -> list[ContextEntry]:
     import csv
     from io import StringIO
 
+    # Excel writes a UTF-8 BOM, and a stray blank line may precede the header;
+    # both used to turn the header row into a junk entry ("source" -> "target").
+    content = content.lstrip("\ufeff")
     reader = csv.reader(StringIO(content), delimiter=delimiter)
     entries: list[ContextEntry] = []
-    for index, row in enumerate(reader):
+    seen_first_row = False
+    for row in reader:
         if not row or not row[0].strip():
             continue
-        if index == 0 and row[0].strip().lower() in ("source", "source_text"):
-            continue  # header
+        if not seen_first_row:
+            seen_first_row = True
+            if row[0].strip().lstrip("\ufeff").lower() in ("source", "source_text"):
+                continue  # header
         source = row[0].strip()
         target = row[1].strip() if len(row) > 1 else ""
         entry_type = row[2].strip() if len(row) > 2 and row[2].strip() else "prefill"
@@ -283,8 +294,8 @@ class ContextImporter:
         overlap: int | None = None,
     ) -> list[ContextImportChunk]:
         """Preview how text would be chunked without committing."""
-        cs = chunk_size or self.chunk_size
-        ov = overlap or self.overlap
+        cs = self.chunk_size if chunk_size is None else chunk_size
+        ov = self.overlap if overlap is None else overlap
         chunks = chunk_text(text, cs, ov)
         return [
             ContextImportChunk(index=i, text=chunk, approved=True) for i, chunk in enumerate(chunks)

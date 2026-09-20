@@ -139,7 +139,10 @@ def audit_segments(
             if seg.status == "proofread":
                 report.proofread_count += 1
 
-        if not seg.translated or seg.status == "pending":
+        # An empty translation is exactly what the "empty" check below exists to
+        # report, so only genuinely unprocessed segments are skipped here.
+        # Testing `not seg.translated` let empty strings through the check.
+        if seg.translated is None or seg.status == "pending":
             continue
 
         text = seg.translated

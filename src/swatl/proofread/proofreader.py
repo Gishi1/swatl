@@ -58,7 +58,11 @@ class Proofreader:
                 for attempt in range(1, self.retry_max + 1):
                     try:
                         result = await self.provider.proofread([seg], glossary)
-                        if result and result[0].translated:
+                        # Trust the provider's status, not the text: on an HTTP
+                        # error it returns the segment untouched (still
+                        # TRANSLATED), so checking only that the text is truthy
+                        # recorded a failed proofread as a successful one.
+                        if result and result[0].status == SegmentStatus.PROOFREAD:
                             seg.translated = result[0].translated
                             seg.status = SegmentStatus.PROOFREAD
                             return seg
@@ -71,7 +75,7 @@ class Proofreader:
                             e,
                         )
                         if attempt < self.retry_max:
-                            await asyncio.sleep(1.0**attempt)
+                            await asyncio.sleep(1.5**attempt)
                 # Keep original on failure
                 return seg
 

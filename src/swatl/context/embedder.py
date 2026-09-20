@@ -167,7 +167,12 @@ class Embedder:
             input=texts,
             dimensions=self.config.dimension or None,
         )
-        return [d.embedding for d in response.data]
+        # The index is flat inner product and the scores are treated as cosine
+        # similarity, so vectors must be unit length here too. OpenAI's own
+        # models happen to return normalised vectors; local servers (LM Studio,
+        # TEI, vLLM) may not, which silently broke the min_score cutoff.
+        vectors = [list(d.embedding) for d in response.data]
+        return self._normalise(vectors)
 
     # ── Model info ──────────────────────────────────────────────────────
 

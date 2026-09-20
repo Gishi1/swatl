@@ -31,8 +31,16 @@ app = FastAPI(title="swatl", version="0.1.0")
 
 
 def _expand(state_dir: str) -> str:
-    """Expand ``~`` and normalise a user-supplied state directory path."""
-    return str(Path(state_dir).expanduser()) if state_dir else state_dir
+    """Expand ``~`` and normalise a user-supplied state directory path.
+
+    An empty value is rejected: ``Path("")`` is the current working directory,
+    so a missing or blank ``state_dir`` used to make the server read and write
+    ``segments.jsonl``, ``glossary.toml`` and ``context_db/`` next to whatever
+    directory it was started from.
+    """
+    if not state_dir or not state_dir.strip():
+        raise HTTPException(status_code=400, detail="state_dir must not be empty")
+    return str(Path(state_dir).expanduser())
 
 
 def _read_store(state_dir: str) -> SegmentStore:
@@ -60,15 +68,19 @@ def _parse_json_entries(content: str) -> list[ContextEntry]:
     """Parse bilingual JSON (or a full export), reporting bad input as a 400."""
     try:
         return parse_json_entries(content)
-    except (ValueError, ValidationError) as e:
+    except (ValueError, ValidationError, TypeError, AttributeError, KeyError) as e:
+        # TypeError/AttributeError/KeyError catch structurally wrong but valid
+        # JSON, e.g. "tags": null or "tags": 5.
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
 
 
 def _parse_csv_entries(content: str, delimiter: str) -> list[ContextEntry]:
     """Parse bilingual CSV (or a full export), reporting bad input as a 400."""
+    if not isinstance(delimiter, str) or len(delimiter) != 1:
+        raise HTTPException(status_code=400, detail="delimiter must be a single character")
     try:
         return parse_csv_entries(content, delimiter)
-    except (csv.Error, ValidationError) as e:
+    except (csv.Error, ValueError, ValidationError, TypeError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid CSV: {e}") from e
 
 
@@ -330,6 +342,10 @@ async def list_glossary(state_dir: str):
         }
     except FileNotFoundError:
         return {"name": "", "pair": ["zh", "en"], "entries": []}
+    except Exception as e:
+        # tomlkit raises its own ValueError subclass on a malformed file; that
+        # used to escape as a 500.
+        raise HTTPException(status_code=400, detail=f"Invalid glossary.toml: {e}") from e
 
 
 @app.post("/api/glossary")
@@ -346,6 +362,8 @@ async def add_glossary_term(state_dir: str, term: GlossaryTermReq):
         from swatl.glossary import create_default_glossary
 
         glossary = create_default_glossary()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid glossary.toml: {e}") from e
     glossary.entries.append(
         GlossaryEntry(source=term.source, target=term.target, domain=term.domain)
     )

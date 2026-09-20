@@ -24,6 +24,42 @@ def _auth_headers(api_key: str) -> dict[str, str]:
     return headers
 
 
+# Similarity thresholds per metric: (ok, warning). Below the second value the
+# round trip lost or invented so much that the segment is worth a human look.
+#
+# Calibrated by running real round trips through a local model (26 segments,
+# zh->en->zh) and comparing each source with its back-translation:
+#
+#   chrF  real pairs: min 0.222, median 0.622, mean 0.667
+#   chrF  mismatched pairs (a source compared with another segment's
+#         back-translation): median 0.018, p90 0.067, p99 0.437
+#
+# 0.45 keeps about 80% of genuine round trips unflagged while almost every
+# mismatched pair lands far below it. Levenshtein is much less discriminating
+# (good pairs start at 0.40), so its old 0.70/0.40 cut-offs are unchanged.
+THRESHOLDS: dict[str, tuple[float, float]] = {
+    "chrf": (0.45, 0.25),
+    "levenshtein": (0.70, 0.40),
+}
+
+DEFAULT_METRIC = "chrf"
+
+
+def score_similarity(source: str, back_translated: str, metric: str = DEFAULT_METRIC) -> float:
+    """Similarity in ``0 … 1`` between the source and its back-translation.
+
+    ``chrf`` is the standard character n-gram metric and handles Chinese without
+    a tokenizer; ``levenshtein`` is the older, coarser edit-distance ratio.
+    """
+    from swatl.quality.metrics import chrf, levenshtein_similarity
+
+    if metric == "levenshtein":
+        return levenshtein_similarity(source, back_translated)
+    if metric != "chrf":
+        raise ValueError(f"Unknown similarity metric {metric!r}: use 'chrf' or 'levenshtein'")
+    return chrf(source, back_translated)
+
+
 @dataclass
 class BackTranslationResult:
     """Result of back-translating a single segment."""
@@ -44,39 +80,17 @@ class BackTranslationReport:
     critical: int
     results: list[BackTranslationResult]
     details: list[dict[str, Any]]
+    metric: str = DEFAULT_METRIC
 
     def summary(self) -> str:
         """Return a human-readable summary string."""
         lines = [
-            f"Back-Translation Report: {self.segments_tested} tested",
+            f"Back-Translation Report: {self.segments_tested} tested ({self.metric})",
             f"  ✅ OK: {self.ok}",
             f"  ⚠️  Warnings: {self.warnings}",
             f"  ❌ Critical: {self.critical}",
         ]
         return "\n".join(lines)
-
-
-def _levenshtein_similarity(a: str, b: str) -> float:
-    """Compute similarity ratio using Levenshtein distance (simple DP)."""
-    if not a and not b:
-        return 1.0
-    if not a or not b:
-        return 0.0
-    m, n = len(a), len(b)
-    dp = [[0] * (n + 1) for _ in range(m + 1)]
-    for i in range(m + 1):
-        dp[i][0] = i
-    for j in range(n + 1):
-        dp[0][j] = j
-    for i in range(1, m + 1):
-        for j in range(1, n + 1):
-            if a[i - 1] == b[j - 1]:
-                dp[i][j] = dp[i - 1][j - 1]
-            else:
-                dp[i][j] = 1 + min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1])
-    distance = dp[m][n]
-    max_len = max(m, n)
-    return 1.0 - (distance / max_len)
 
 
 async def back_translate_segment(
@@ -85,6 +99,8 @@ async def back_translate_segment(
     api_key: str,
     model: str = "deepseek-chat",
     timeout: float = 60.0,
+    metric: str = DEFAULT_METRIC,
+    source_language: str = "Chinese",
 ) -> BackTranslationResult:
     """Back-translate a single segment using an LLM API."""
     # Same endpoint convention as the translation provider: base_url already
@@ -103,8 +119,8 @@ async def back_translate_segment(
                         "role": "system",
                         "content": (
                             "You are a translator doing quality verification. "
-                            "Back-translate the following English text back to Chinese. "
-                            "Return only the Chinese translation, nothing else."
+                            f"Back-translate the following English text back to {source_language}. "
+                            "Return only the translation, nothing else."
                         ),
                     },
                     {
@@ -120,11 +136,12 @@ async def back_translate_segment(
         content, _usage = parse_chat_completion(response)
         back_translated = (content or "").strip()
 
-    similarity = _levenshtein_similarity(segment.source_text, back_translated)
+    similarity = score_similarity(segment.source_text, back_translated, metric)
+    ok_threshold, warn_threshold = THRESHOLDS[metric]
 
-    if similarity >= 0.7:
+    if similarity >= ok_threshold:
         flag = "ok"
-    elif similarity >= 0.4:
+    elif similarity >= warn_threshold:
         flag = "warning"
     else:
         flag = "critical"
@@ -145,6 +162,8 @@ async def back_translate_sample(
     sample_size: int = 20,
     seed: int | None = None,
     timeout: float = 60.0,
+    metric: str = DEFAULT_METRIC,
+    source_language: str = "Chinese",
 ) -> BackTranslationReport:
     """Back-translate a random sample of translated segments."""
     translated = [
@@ -160,7 +179,15 @@ async def back_translate_sample(
 
     async def _process(seg: Segment) -> BackTranslationResult | None:
         try:
-            return await back_translate_segment(seg, api_base_url, api_key, model, timeout=timeout)
+            return await back_translate_segment(
+                seg,
+                api_base_url,
+                api_key,
+                model,
+                timeout=timeout,
+                metric=metric,
+                source_language=source_language,
+            )
         except Exception as e:
             logger.warning("Back-translation failed for segment %s: %s", seg.id, e)
             return None
@@ -193,6 +220,7 @@ async def back_translate_sample(
         critical=critical,
         results=results,
         details=details,
+        metric=metric,
     )
 
 
@@ -215,6 +243,7 @@ def save_report(report: BackTranslationReport, output_path: str | Path) -> None:
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
     data = {
+        "metric": report.metric,
         "segments_tested": report.segments_tested,
         "ok": report.ok,
         "warnings": report.warnings,

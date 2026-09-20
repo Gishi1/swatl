@@ -669,3 +669,120 @@ class TestRequestTimeout:
         asyncio.run(provider.translate(_segments(1), None, "en", None))
 
         assert seen and seen[0] == 300.0
+
+
+class TestEmptyAfterCleaning:
+    """A response that cleans to nothing is a failure, not a translation."""
+
+    def test_wrapper_only_batch_value_is_failed(self, monkeypatch):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return _chat_response(json.dumps({"p-0001": '<segment id="p-0001"></segment>'}))
+
+        _patch_transport(monkeypatch, handler)
+        segments = _segments(1)
+        result = asyncio.run(_provider().translate(segments, None, "en", None))
+
+        assert result[0].translated is None
+        assert result[0].status == SegmentStatus.FAILED
+
+    def test_empty_string_batch_value_is_failed(self, monkeypatch):
+        _patch_transport(
+            monkeypatch,
+            lambda request: _chat_response(json.dumps({"p-0001": "   "})),
+        )
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].status == SegmentStatus.FAILED
+
+
+class TestFallbackDoesNotStoreEnvelope:
+    """The single-segment fallback must never store raw JSON as the text."""
+
+    def test_id_map_response_is_not_used_as_text(self, monkeypatch):
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # Batch request returns nothing for the segment.
+                return _chat_response(json.dumps({}))
+            # The lone retry answers with the batch shape instead of
+            # {"translated": ...}.
+            return _chat_response(json.dumps({"p-0001": "Hello there"}))
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].translated == "Hello there"
+        assert result[0].status == SegmentStatus.TRANSLATED
+
+    def test_useless_object_fails_instead_of_storing_json(self, monkeypatch):
+        calls = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _chat_response(json.dumps({}))
+            return _chat_response(json.dumps({"note": "I cannot help with that"}))
+
+        _patch_transport(monkeypatch, handler)
+        result = asyncio.run(_provider().translate(_segments(1), None, "en", None))
+
+        assert result[0].translated is None
+        assert result[0].status == SegmentStatus.FAILED
+        assert "note" not in (result[0].translated or "")
+
+
+class TestTransientFailuresAreRetried:
+    """A 429/502 must not permanently fail a batch."""
+
+    def test_retries_then_succeeds(self, monkeypatch):
+        attempts = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                return httpx.Response(429, headers={"retry-after": "0"})
+            return _chat_response(json.dumps({"p-0001": "Hello"}))
+
+        _patch_transport(monkeypatch, handler)
+        provider = OpenAICompatible(
+            base_url="https://api.example.com/v1", model="m", api_key="k", max_retries=3
+        )
+        result = asyncio.run(provider.translate(_segments(1), None, "en", None))
+
+        assert attempts["n"] == 3  # two retries then a success
+        assert result[0].translated == "Hello"
+        assert result[0].status == SegmentStatus.TRANSLATED
+
+    def test_non_retryable_status_fails_immediately(self, monkeypatch):
+        attempts = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts["n"] += 1
+            return httpx.Response(400, json={"error": "bad request"})
+
+        _patch_transport(monkeypatch, handler)
+        provider = OpenAICompatible(
+            base_url="https://api.example.com/v1", model="m", api_key="k", max_retries=3
+        )
+        result = asyncio.run(provider.translate(_segments(1), None, "en", None))
+
+        assert attempts["n"] == 1  # a 400 is not retried
+        assert result[0].status == SegmentStatus.FAILED
+
+    def test_gives_up_after_max_retries(self, monkeypatch):
+        attempts = {"n": 0}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            attempts["n"] += 1
+            return httpx.Response(503, headers={"retry-after": "0"})
+
+        _patch_transport(monkeypatch, handler)
+        provider = OpenAICompatible(
+            base_url="https://api.example.com/v1", model="m", api_key="k", max_retries=3
+        )
+        result = asyncio.run(provider.translate(_segments(1), None, "en", None))
+
+        assert attempts["n"] == 3
+        assert result[0].status == SegmentStatus.FAILED

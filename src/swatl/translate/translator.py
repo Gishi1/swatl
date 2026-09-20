@@ -157,29 +157,45 @@ class Translator:
                     seg.translated = None
                 return batch
 
-        # Split into batches
+        # Split into batches and dispatch them in groups of `concurrency`.
+        #
+        # The batches used to be awaited one at a time, so the semaphore never
+        # had a second holder and `--concurrency` was a silent no-op: a whole
+        # book was translated strictly one request after another. Running a
+        # whole group at once makes the option real.
+        #
+        # Results are still accumulated *between* groups, so the running context
+        # window a prompt sees never depends on completion order — the tasks in
+        # one group all observe the same snapshot.
         batches = [
             pending[i : i + self.batch_size] for i in range(0, len(pending), self.batch_size)
         ]
+        group_size = max(1, self.concurrency)
 
-        for i, batch in enumerate(batches):
-            start = time.monotonic()
-            batch_results = await translate_batch(batch)
-            elapsed = time.monotonic() - start
-            results.extend(batch_results)
+        for group_start in range(0, len(batches), group_size):
+            group = batches[group_start : group_start + group_size]
+            started = time.monotonic()
+            group_results = await asyncio.gather(*(translate_batch(b) for b in group))
+            elapsed = time.monotonic() - started
 
-            ok = sum(1 for s in batch_results if s.status != "failed")
-            fail = sum(1 for s in batch_results if s.status == "failed")
+            ok = 0
+            fail = 0
+            for batch_results in group_results:
+                results.extend(batch_results)
+                ok += sum(1 for s in batch_results if s.status != "failed")
+                fail += sum(1 for s in batch_results if s.status == "failed")
+                failed.extend(s for s in batch_results if s.status == "failed")
+
             logger.info(
-                "Batch %d/%d: %d ok, %d failed (%.1fs)",
-                i + 1,
+                "Batches %d-%d/%d: %d ok, %d failed (%.1fs, concurrency=%d)",
+                group_start + 1,
+                group_start + len(group),
                 len(batches),
                 ok,
                 fail,
                 elapsed,
+                len(group),
             )
-            if fail:
-                failed.extend([s for s in batch_results if s.status == "failed"])
 
         # Update original list in-place. Index by id once: a nested scan per
         # result made this O(n²) and dominated run time on large books.

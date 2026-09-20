@@ -386,7 +386,10 @@ class TestEmbedder:
         result = embedder.embed_one("hello")
         assert isinstance(result, list)
         assert len(result) == 3
-        assert result == [0.1, 0.2, 0.3]
+        # Vectors are L2-normalised so the flat inner-product index behaves as
+        # cosine similarity, exactly as the Ollama path does.
+        assert result == pytest.approx([0.1 / 0.3741657, 0.2 / 0.3741657, 0.3 / 0.3741657])
+        assert sum(v * v for v in result) == pytest.approx(1.0)
 
     def test_dimension_property(self):
         embedder = Embedder(EmbedderConfig(backend="openai", dimension=256))

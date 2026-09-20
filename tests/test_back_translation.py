@@ -4,16 +4,17 @@ import asyncio
 import json
 
 import httpx
+import pytest
 
 from swatl.models import Segment
 from swatl.quality.back_translation import (
     BackTranslationReport,
     BackTranslationResult,
-    _levenshtein_similarity,
     back_translate_sample,
     back_translate_segment,
     save_report,
 )
+from swatl.quality.metrics import levenshtein_similarity
 
 
 class TestLevenshteinSimilarity:
@@ -21,33 +22,33 @@ class TestLevenshteinSimilarity:
 
     def test_identical_strings(self):
         """Identical strings should have similarity 1.0."""
-        assert _levenshtein_similarity("你好世界", "你好世界") == 1.0
+        assert levenshtein_similarity("你好世界", "你好世界") == 1.0
 
     def test_completely_different(self):
         """Very different strings should have low similarity."""
-        sim = _levenshtein_similarity("Hello World", "Bonjour le monde")
+        sim = levenshtein_similarity("Hello World", "Bonjour le monde")
         assert 0.0 <= sim < 1.0
 
     def test_empty_strings(self):
         """Two empty strings should have similarity 1.0."""
-        assert _levenshtein_similarity("", "") == 1.0
+        assert levenshtein_similarity("", "") == 1.0
 
     def test_one_empty(self):
         """One empty and one non-empty string should have similarity 0.0."""
-        assert _levenshtein_similarity("", "Hello") == 0.0
+        assert levenshtein_similarity("", "Hello") == 0.0
 
     def test_single_char_match(self):
         """Single matching char should have similarity 1.0."""
-        assert _levenshtein_similarity("a", "a") == 1.0
+        assert levenshtein_similarity("a", "a") == 1.0
 
     def test_partial_match(self):
         """Partial overlap should give intermediate similarity."""
-        sim = _levenshtein_similarity("你好世界", "你好")
+        sim = levenshtein_similarity("你好世界", "你好")
         assert sim >= 0.5  # 2 of 4 chars match
 
     def test_english_backtranslation(self):
         """English→Chinese back-translation: similarity should be low."""
-        sim = _levenshtein_similarity("Hello World", "你好世界")
+        sim = levenshtein_similarity("Hello World", "你好世界")
         assert sim < 0.5  # Very different languages
 
 
@@ -383,3 +384,46 @@ class TestStreamingGatewayInterop:
         self._patch(monkeypatch, handler)
         result = asyncio.run(back_translate_segment(self._segments()[0], "https://x/v1", "k"))
         assert result.back_translated == "宇宙很大"
+
+
+class TestSimilarityMetricSelection:
+    """The default metric is chrF; the old edit-distance ratio stays available."""
+
+    def test_chrf_separates_a_faithful_round_trip_from_a_wrong_one(self):
+        from swatl.quality.back_translation import THRESHOLDS, score_similarity
+
+        source = "红岸基地是一座秘密设施。"
+        faithful = "红岸基地是一个秘密设施。"  # one character differs
+        unrelated = "今天天气很好。"
+
+        ok_threshold, warn_threshold = THRESHOLDS["chrf"]
+        assert score_similarity(source, faithful) > ok_threshold
+        assert score_similarity(source, unrelated) < warn_threshold
+
+    def test_identical_text_scores_one(self):
+        from swatl.quality.back_translation import score_similarity
+
+        assert score_similarity("同一个句子", "同一个句子") == 1.0
+
+    def test_metric_argument_selects_the_metric(self):
+        from swatl.quality.back_translation import score_similarity
+        from swatl.quality.metrics import levenshtein_similarity
+
+        a, b = "这是一个测试句子。", "这是另一个句子。"
+        assert score_similarity(a, b, "levenshtein") == levenshtein_similarity(a, b)
+        assert score_similarity(a, b, "chrf") != levenshtein_similarity(a, b)
+
+    def test_unknown_metric_is_rejected(self):
+        from swatl.quality.back_translation import score_similarity
+
+        with pytest.raises(ValueError, match="Unknown similarity metric"):
+            score_similarity("a", "b", "bleu")
+
+    def test_report_records_the_metric(self):
+        from swatl.quality.back_translation import BackTranslationReport
+
+        report = BackTranslationReport(
+            segments_tested=0, ok=0, warnings=0, critical=0, results=[], details=[]
+        )
+        assert report.metric == "chrf"
+        assert "chrf" in report.summary()

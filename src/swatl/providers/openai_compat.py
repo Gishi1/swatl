@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -17,6 +18,21 @@ logger = logging.getLogger(__name__)
 
 # How many segments to send in a single chat completion request.
 TRANSLATE_BATCH_SIZE = 10
+
+# HTTP statuses worth retrying: rate limits and transient upstream failures.
+RETRYABLE_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+def _retry_delay_seconds(response: httpx.Response, default: float) -> float:
+    """Seconds to wait before retrying *response*, honouring ``Retry-After``."""
+    raw = response.headers.get("retry-after")
+    if raw:
+        try:
+            return max(0.0, min(float(raw), 30.0))
+        except ValueError:
+            pass  # an HTTP-date, or something else we do not parse
+    return default
+
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
@@ -214,6 +230,8 @@ class OpenAICompatible(Provider):
         instruction: str | None = None,
         stop: list[str] | None = None,
         timeout: float = 60.0,
+        max_retries: int = 3,
+        retry_backoff: float = 1.5,
     ) -> None:
         if mode not in ("json", "plain"):
             raise ValueError(f"Unknown provider mode {mode!r}: use 'json' or 'plain'")
@@ -225,6 +243,12 @@ class OpenAICompatible(Provider):
         self.instruction = instruction or DEFAULT_PLAIN_INSTRUCTION
         self.stop = list(stop or [])
         self.timeout = timeout
+        # Transient failures are retried here rather than in the translator:
+        # this adapter reports a failed request by returning FAILED segments
+        # instead of raising, so an outer retry loop never saw the HTTP error.
+        self.max_retries = max(1, max_retries)
+        self.retry_backoff = retry_backoff
+        self.max_retry_delay = 15.0
         self.cost_per_token_in: float = 0.0  # provider-specific
         self.cost_per_token_out: float = 0.0
         self._compression_warned = False
@@ -354,29 +378,78 @@ class OpenAICompatible(Provider):
             "stream": False,
             **self.extra,
         }
-        response = await client.post(
-            f"{self.base_url}/chat/completions",
-            headers=self._headers(),
-            json=payload,
-        )
+        response = await self._post(client, f"{self.base_url}/chat/completions", payload)
         response.raise_for_status()
         self._warn_if_gateway_compresses(response)
         return parse_chat_completion(response)
 
-    @staticmethod
+    async def _post(
+        self, client: httpx.AsyncClient, url: str, payload: dict[str, Any]
+    ) -> httpx.Response:
+        """POST a request, retrying rate limits and transient failures.
+
+        A 429 or a 502 used to fail every segment in the batch permanently,
+        because this adapter catches the HTTP error and marks the segments
+        FAILED instead of raising — the translator's retry loop only handles
+        exceptions, so it never retried anything. Retrying at the transport
+        layer covers batched translation, the single-segment fallback, plain
+        mode and proofreading alike.
+        """
+        delay = 1.0
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                response = await client.post(url, headers=self._headers(), json=payload)
+            except httpx.TransportError as e:
+                if attempt == self.max_retries:
+                    raise
+                logger.warning(
+                    "Request to %s failed (%s); retrying in %.1fs (%d/%d)",
+                    url,
+                    e,
+                    delay,
+                    attempt,
+                    self.max_retries,
+                )
+            else:
+                if response.status_code not in RETRYABLE_STATUS or attempt == self.max_retries:
+                    return response
+                delay = _retry_delay_seconds(response, delay)
+                logger.warning(
+                    "HTTP %d from %s; retrying in %.1fs (%d/%d)",
+                    response.status_code,
+                    self.base_url,
+                    delay,
+                    attempt,
+                    self.max_retries,
+                )
+            await asyncio.sleep(delay)
+            delay = min(delay * self.retry_backoff, self.max_retry_delay)
+
+        raise RuntimeError("retry loop finished without a response")  # pragma: no cover
+
     @staticmethod
     def _lookup_translation(mapping: dict[str, Any], seg: Segment, batch_size: int) -> str | None:
-        """Pull one segment's translation out of a parsed response object."""
+        """Pull one segment's translation out of a parsed response object.
+
+        Emptiness is judged *after* cleaning: a response such as
+        ``<segment id="p-0001"></segment>`` is non-empty raw text that cleans to
+        nothing, and returning ``""`` here used to be recorded as a successful
+        translation, blanking the paragraph in the exported book.
+        """
         value = mapping.get(seg.id)
         if isinstance(value, dict):
             value = value.get("translated")
-        if isinstance(value, str) and value.strip():
-            return _clean_translation(value)
+        if isinstance(value, str):
+            cleaned = _clean_translation(value)
+            if cleaned:
+                return cleaned
         # A single-segment response may use the flat {"translated": ...} shape.
         if batch_size == 1:
             flat = mapping.get("translated")
-            if isinstance(flat, str) and flat.strip():
-                return _clean_translation(flat)
+            if isinstance(flat, str):
+                cleaned = _clean_translation(flat)
+                if cleaned:
+                    return cleaned
         return None
 
     # ── Provider interface ──────────────────────────────────────────────
@@ -492,10 +565,8 @@ class OpenAICompatible(Provider):
                     payload["stop"] = self.stop
 
                 try:
-                    response = await client.post(
-                        f"{self.base_url}/chat/completions",
-                        headers=self._headers(),
-                        json=payload,
+                    response = await self._post(
+                        client, f"{self.base_url}/chat/completions", payload
                     )
                     response.raise_for_status()
                     self._warn_if_gateway_compresses(response)
@@ -535,11 +606,25 @@ class OpenAICompatible(Provider):
             return None
 
         mapping = extract_json_object(content)
-        if mapping is None:
-            return _clean_translation(content or "") or None
-        translation = mapping.get("translated")
-        if isinstance(translation, str) and translation.strip():
-            return _clean_translation(translation)
+        if mapping is not None:
+            translation = mapping.get("translated")
+            if isinstance(translation, str):
+                cleaned = _clean_translation(translation)
+                if cleaned:
+                    return cleaned
+            # The model may answer with the batch shape even for one segment.
+            value = mapping.get(seg.id)
+            if isinstance(value, str):
+                cleaned = _clean_translation(value)
+                if cleaned:
+                    return cleaned
+            # A JSON object with nothing usable must not become the
+            # translation: storing the envelope itself put
+            # '{"p-0002": "SECOND"}' into the book as a sentence.
+            logger.warning("Fallback response for %s had no usable translation", seg.id)
+            return None
+        # No JSON at all: some models answer a single-segment prompt with the
+        # bare text, which is a legitimate translation.
         return _clean_translation(content or "") or None
 
     async def proofread(self, segments: list[Segment], glossary: Glossary | None) -> list[Segment]:

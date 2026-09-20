@@ -238,3 +238,37 @@ class TestAuditReport:
             ],
         )
         assert not report2.has_critical_issues()
+
+
+class TestEmptyTranslationIsAudited:
+    """An empty translation is the one thing the audit must never skip."""
+
+    @staticmethod
+    def _seg(translated: str) -> Segment:
+        return Segment(
+            id="p-0001",
+            doc="doc",
+            anchor=".//p[1]",
+            tag="p",
+            source_text="红岸基地是一座秘密设施。",
+            translated=translated,
+            status="translated",
+        )
+
+    def test_empty_string_translation_is_flagged(self):
+        report = audit_segments([self._seg("")])
+        empty = [i for i in report.issues if i.type == "empty"]
+        assert len(empty) == 1
+        assert empty[0].severity == "error"
+
+    def test_whitespace_translation_is_flagged(self):
+        report = audit_segments([self._seg("   ")])
+        assert [i.type for i in report.issues if i.type == "empty"] == ["empty"]
+
+    def test_none_translation_is_not_reported_as_empty(self):
+        """An unprocessed segment is not an empty translation."""
+        seg = self._seg("")
+        seg.translated = None
+        seg.status = "pending"
+        report = audit_segments([seg])
+        assert [i for i in report.issues if i.type == "empty"] == []

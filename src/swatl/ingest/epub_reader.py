@@ -98,7 +98,9 @@ def _parse_opf(extract_dir: Path) -> EpubInfo:
     ns = ""
     if container_root.tag.startswith("{"):
         ns = container_root.tag.split("}")[0] + "}"
-    root_ref = container_root.find(f".//{{{ns}}}rootfile" if ns else ".//rootfile")
+    # `ns` already carries its braces, so the path is ".//{uri}rootfile" — the
+    # previous f-string added a second pair and never matched anything.
+    root_ref = container_root.find(f".//{ns}rootfile" if ns else ".//rootfile")
 
     if root_ref is None:
         # Fallback: find by local-name via iteration
@@ -203,14 +205,20 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
                         break
 
     if not spine_items:
-        # Fallback: scan for all xhtml files
-        spine_items = [
-            f.text
-            for f in root.iter()
-            if f.tag.endswith("href")
-            and f.text
-            and (f.text.endswith(".xhtml") or f.text.endswith(".html"))
-        ]
+        # Fallback for a book whose <spine>/<itemref> cannot be resolved: use
+        # every content document in the manifest, in manifest order. The old
+        # version read `f.tag.endswith("href")`, but href is an *attribute* of
+        # <item>, so it could never match and the book silently produced zero
+        # segments instead.
+        seen: set[str] = set()
+        for item in manifest_elem.findall(_q("item")) if manifest_elem is not None else []:
+            href = item.get("href", "")
+            if not href or href in seen:
+                continue
+            media_type = item.get("media-type", "")
+            if media_type.endswith("xhtml+xml") or href.endswith((".xhtml", ".html", ".htm")):
+                seen.add(href)
+                spine_items.append(href)
 
     epub_version = _detect_version(root)
 
@@ -229,11 +237,20 @@ def _parse_opf_file(opf_path: Path) -> EpubInfo:
 
 
 def _detect_version(root) -> str:
-    """Detect EPUB version from the OPF root attributes or namespace."""
-    tag = root.tag
-    if "2017" in tag or "3.0" in tag or root.get("version"):
+    """Detect the EPUB version from the OPF ``version`` attribute or namespace.
+
+    ``root.get("version")`` alone is truthy for *any* value, so every EPUB 2
+    book was reported as EPUB 3.0.
+    """
+    version = (root.get("version") or "").strip()
+    if version.startswith("3"):
         return "EPUB 3.0"
-    return "EPUB 2.0"
+    if version.startswith("2"):
+        return "EPUB 2.0"
+    tag = root.tag
+    if "2017" in tag:  # the EPUB 3 package namespace
+        return "EPUB 3.0"
+    return "EPUB 2.0" if version else "unknown"
 
 
 def child_ns(tag: str) -> str:

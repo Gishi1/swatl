@@ -321,3 +321,65 @@ class TestInlineTailsAndEncoding:
         body = parse_xhtml(doc).find(".//body")
         segments, _ = extract_segments_from_doc("d.xhtml", body)
         assert [s for s in segments if s.part == "tail"] == []
+
+    def test_tail_after_void_element_is_segmented(self, tmp_path):
+        """Text after <br/> or <img/> has no other anchor and used to be lost.
+
+        Neither element can hold text, so the parent's own text node stops at
+        the first child; without a tail segment the second half of the paragraph
+        stayed in Chinese inside an otherwise translated book.
+        """
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(
+            tmp_path,
+            "<p>第一行<br/>第二行</p><p>文字<img src='i.png'/>后面的文字</p>",
+        )
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        by_tag: dict[tuple[str, str], str] = {(s.tag, s.part): s.source_text for s in segments}
+        assert by_tag[("p", "text")] == "文字"
+        assert by_tag[("br", "tail")] == "第二行"
+        assert by_tag[("img", "tail")] == "后面的文字"
+
+    def test_tail_after_script_is_segmented(self, tmp_path):
+        """The text after a skipped element is still content."""
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<p>保留<script>var x = 1;</script>脚本后的文字</p>")
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        by_tag = {(s.tag, s.part): s.source_text for s in segments}
+        assert by_tag[("p", "text")] == "保留"
+        assert by_tag[("script", "tail")] == "脚本后的文字"
+        assert ("script", "text") not in by_tag  # the script body is untouched
+
+    def test_skipped_subtree_is_not_segmented(self, tmp_path):
+        """Nothing inside <svg> is translated, but the text after it is."""
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(
+            tmp_path,
+            "<p>图标<svg><text>SVG文字</text><tspan>内部</tspan></svg>图后的文字</p>",
+        )
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        texts = [s.source_text for s in segments]
+        assert "SVG文字" not in texts
+        assert "内部" not in texts
+        assert "图后的文字" in texts
+
+    def test_block_tail_is_segmented(self, tmp_path):
+        """A block element's tail is content of its parent, not of the block."""
+        from swatl.ingest.segmenter import extract_segments_from_doc, parse_xhtml
+
+        doc = self._doc(tmp_path, "<div>块前<p>段落</p>块后</div>")
+        body = parse_xhtml(doc).find(".//body")
+        segments, _ = extract_segments_from_doc("d.xhtml", body)
+
+        # Exclude the document <title>, which is segmented separately.
+        texts = [s.source_text for s in segments if s.tag != "title"]
+        assert texts == ["块前", "段落", "块后"]

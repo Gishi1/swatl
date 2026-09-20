@@ -211,8 +211,26 @@ def inspect(
         extra_docs=info.nav_items,
     )
 
+    # Optional glossary: report how many of its terms this book actually uses,
+    # so a wrong or stale glossary file is visible before a translation run.
+    glossary_line = ""
+    if glossary:
+        from swatl.glossary import load_glossary
+
+        try:
+            loaded = load_glossary(glossary)
+        except Exception as e:
+            console.print(f"[red]Could not read glossary '{glossary}': {e}[/red]")
+            raise SystemExit(1) from e
+        used = sum(
+            1
+            for entry in loaded.entries
+            if any(entry.source in seg.source_text for seg in segments)
+        )
+        glossary_line = f"Glossary:   {len(loaded.entries)} entries ({used} used)\n"
+
     # Estimate tokens and costs
-    tokens_in, tokens_out = _estimate_tokens(segments)
+    tokens_in, tokens_out = _estimate_tokens(segments, info.language)
 
     # Cost estimates (per million tokens)
     costs = {
@@ -231,6 +249,7 @@ def inspect(
             f"Language:   {info.language}\n"
             f"Documents:  {doc_count}\n"
             f"Spine:      {len(info.spine_items)} documents\n"
+            f"{glossary_line}"
             f"Segments:   {len(segments)}\n"
             f"Tokens:     ~{tokens_in:,} in / ~{tokens_out:,} out\n"
             + "\n".join(
@@ -258,7 +277,9 @@ def translate(
         DEFAULT_STATE_DIR, "--state", "-s", help="State directory for checkpoints."
     ),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume from last checkpoint."),
-    concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max parallel LLM calls."),
+    concurrency: int = typer.Option(
+        4, "--concurrency", "-c", min=1, help="Max parallel LLM calls."
+    ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Estimate cost without making API calls."
     ),
@@ -340,7 +361,7 @@ def translate(
         store.append_many(segments)
 
     # Estimate tokens
-    tokens_in, tokens_out = _estimate_tokens(segments)
+    tokens_in, tokens_out = _estimate_tokens(segments, info.language)
     cost_deepseek = (tokens_in * 0.14 + tokens_out * 0.28) / 1e6
     console.print(f"[bold]Estimated cost @ DeepSeek: ~${cost_deepseek:.2f}[/bold]")
 
@@ -449,7 +470,9 @@ def translate(
 def proofread(
     state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
     provider: str = typer.Option(DEFAULT_PROVIDER, "--provider", "-p", help="Provider name."),
-    concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max parallel LLM calls."),
+    concurrency: int = typer.Option(
+        4, "--concurrency", "-c", min=1, help="Max parallel LLM calls."
+    ),
     glossary_path: str | None = typer.Option(
         None, "--glossary", "-g", help="Path to glossary TOML."
     ),
@@ -479,7 +502,7 @@ def proofread(
     status_counts = store.status_counts()
     console.print(
         f"Proofreading complete: {status_counts.get('proofread', 0)} proofread, "
-        f"{status_counts.get('translated', 0)} still untranslated"
+        f"{status_counts.get('translated', 0)} still unproofread"
     )
 
 
@@ -658,7 +681,7 @@ def export(
 def back_translate(
     state: str = typer.Option(DEFAULT_STATE_DIR, "--state", "-s", help="State directory."),
     sample_size: int = typer.Option(
-        20, "--sample", "-n", help="Number of segments to back-translate."
+        20, "--sample", "-n", min=1, help="Number of segments to back-translate."
     ),
     provider: str = typer.Option(
         DEFAULT_PROVIDER, "--provider", "-p", help="Provider name for back-translation."
@@ -666,9 +689,20 @@ def back_translate(
     output: str = typer.Option(
         "back_translation_report.json", "--output", "-o", help="Output JSON report."
     ),
+    metric: str = typer.Option(
+        "chrf",
+        "--metric",
+        help="Similarity metric: 'chrf' (character n-gram F-score) or 'levenshtein'.",
+    ),
 ) -> None:
-    """Run back-translation quality verification on a sample of translated segments."""
+    """Run back-translation quality verification on a sample of translated segments.
+
+    Each sampled English segment is translated back into the book's source
+    language and compared with the original text; the closer the round trip, the
+    more likely the translation is faithful.
+    """
     from swatl.config import get_api_key
+    from swatl.providers.openai_compat import TARGET_LANGUAGE_NAMES
     from swatl.quality.back_translation import (
         back_translate_sample,
         save_report,
@@ -677,6 +711,9 @@ def back_translate(
 
     state_dir = Path(state)
     store = SegmentStore(state_dir)
+    run = store.load_run()
+    source_code = run.pair[0] if run and run.pair else "zh"
+    source_language = TARGET_LANGUAGE_NAMES.get(source_code.lower(), source_code)
     segments = list(store.load_segments().values())
     translated = [
         s for s in segments if s.translated and s.status in ("translated", "proofread", "edited")
@@ -716,8 +753,17 @@ def back_translate(
             model=cfg.model,
             sample_size=sample_size,
             timeout=cfg.timeout,
+            metric=metric,
+            source_language=source_language,
         )
     )
+
+    # Every request failed: the report is empty, which used to be printed as a
+    # success ("Report saved") and exited 0, hiding a dead endpoint or bad key.
+    if not report.results and translated:
+        console.print("[red]Back-translation failed for every sampled segment.[/red]")
+        console.print("  Nothing was verified. Check the endpoint, model name and API key.")
+        raise SystemExit(1)
 
     console.print(f"[bold]{report.summary()}[/bold]")
 
@@ -743,12 +789,26 @@ def back_translate(
 def config(
     provider: str = typer.Argument(..., help="Provider name."),
 ) -> None:
-    """Test provider connectivity."""
+    """Show a provider's configuration and check that it responds."""
+    import asyncio
+
+    if provider == "mock":
+        console.print("Provider 'mock' is the offline test provider — nothing to check.")
+        return
+
     cfg = _get_provider_config(provider)
     console.print(f"Provider '{provider}':")
     console.print(f"  Model:  {cfg['model']}")
     console.print(f"  Base:   {cfg['base_url']}")
     console.print(f"  Key env: {cfg.get('api_key_env', '(not set)')}")
+
+    prov, _cfg = _build_provider(provider)
+    result = asyncio.run(prov.test())
+    if result.get("ok"):
+        console.print(f"[green]✓ Reachable ({result.get('latency_ms', 0)} ms)[/green]")
+        return
+    console.print(f"[red]✗ No response: {result.get('error')}[/red]")
+    raise SystemExit(1)
 
 
 def _estimate_tokens(segments: list, source_lang: str = "zh") -> tuple[int, int]:

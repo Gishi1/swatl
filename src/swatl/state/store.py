@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
+import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from swatl.models import RunMetadata, Segment
+
+logger = logging.getLogger(__name__)
 
 
 class SegmentStore:
@@ -45,28 +52,65 @@ class SegmentStore:
         return segments
 
     def iter_segments(self) -> Iterator[Segment]:
-        """Yield segments from the JSONL file."""
+        """Yield segments from the JSONL file.
+
+        A segment that cannot be parsed is skipped with a warning. An append
+        interrupted by a kill, a full disk or a crash leaves a half-written last
+        line, and raising here used to make *every* read of the run fail — a
+        run with thousands of good lines became unusable because of one. Losses
+        are reported rather than hidden so the affected segments can be found.
+        """
         if not self.jsonl_path.exists():
             return
-        with open(self.jsonl_path, encoding="utf-8") as f:
-            for line in f:
+        skipped = 0
+        with open(self.jsonl_path, encoding="utf-8", errors="replace") as f:
+            for line_number, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:
                     continue
-                yield Segment.model_validate(json.loads(line))
+                try:
+                    yield Segment.model_validate(json.loads(line))
+                except (json.JSONDecodeError, ValidationError, UnicodeDecodeError) as e:
+                    skipped += 1
+                    logger.warning(
+                        "Skipping unreadable segment record at %s:%d (%s)",
+                        self.jsonl_path.name,
+                        line_number,
+                        e,
+                    )
+        if skipped:
+            logger.warning(
+                "%d segment record(s) in %s could not be read and were skipped",
+                skipped,
+                self.jsonl_path.name,
+            )
 
     def load_run(self) -> RunMetadata | None:
-        """Load run metadata, or None if not present."""
+        """Load run metadata, or None if it is missing or unreadable."""
         if not self._run_path.exists():
             return None
-        with open(self._run_path, encoding="utf-8") as f:
-            return RunMetadata.from_dict(json.load(f))
+        try:
+            with open(self._run_path, encoding="utf-8") as f:
+                return RunMetadata.from_dict(json.load(f))
+        except (json.JSONDecodeError, ValidationError, OSError) as e:
+            logger.warning("Could not read run metadata from %s: %s", self._run_path, e)
+            return None
 
     def save_run(self, run: RunMetadata) -> None:
         """Persist run metadata."""
         run.updated_at = _now_iso()
-        with open(self._run_path, "w", encoding="utf-8") as f:
-            json.dump(run.to_dict(), f, indent=2, ensure_ascii=False)
+        # Written to a temporary file and moved into place so an interrupted
+        # write cannot leave a truncated (unreadable) run.json behind.
+        fd, tmp_name = tempfile.mkstemp(dir=self._run_path.parent, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(run.to_dict(), f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_name, self._run_path)
+        except OSError:
+            Path(tmp_name).unlink(missing_ok=True)
+            raise
 
     # ── Append / Update ─────────────────────────────────────────────────
 

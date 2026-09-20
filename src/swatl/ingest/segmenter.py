@@ -63,34 +63,12 @@ SKIP_TAGS = {
     "head",
     "title",
     "body",
+    # The document root; only visited when a document has no <body>.
+    "html",
 }
 
 # Regex for building XPath-like anchors
 _TAG_RE = re.compile(r"^[a-z]+$", re.IGNORECASE)
-
-# Inline elements whose following text node ("tail") is part of the same
-# paragraph and must therefore be translated as its own segment. Every entry
-# must also be in TRANSLATABLE_TAGS: translating a tail while leaving the
-# inline element itself in the source language would produce mixed output.
-INLINE_TAGS = {
-    "a",
-    "abbr",
-    "b",
-    "cite",
-    "code",
-    "em",
-    "i",
-    "q",
-    "s",
-    "small",
-    "span",
-    "strong",
-    "sub",
-    "sup",
-    "u",
-}
-
-assert INLINE_TAGS <= TRANSLATABLE_TAGS, INLINE_TAGS - TRANSLATABLE_TAGS
 
 # Suffix appended to an anchor that addresses an element's tail text node.
 TAIL_MARKER = "#tail"
@@ -186,6 +164,27 @@ def build_segment_anchor(body: Any, element: Any) -> str:
     return prefix + "/".join(path_parts)
 
 
+def _in_skipped_subtree(element: Any, body: Any) -> bool:
+    """Whether *element* sits inside an element whose content is not translated.
+
+    ``<script>``, ``<style>`` and ``<svg>`` subtrees are copied through
+    untouched; their descendants must not be segmented even though some of them
+    (``<text>`` inside ``<svg>``, for instance) have translatable-looking tags.
+
+    ``<body>`` is in :data:`SKIP_TAGS` only so that its *own* text node is not
+    segmented, so it is excluded here: callers may legitimately pass the
+    document root instead of ``<body>``, and treating the real ``<body>`` as a
+    skipped subtree would silently disable segmentation for the whole document.
+    """
+    current = element.getparent()
+    while current is not None and current is not body:
+        tag = current.tag
+        if isinstance(tag, str) and tag.lower() in SKIP_TAGS and tag.lower() != "body":
+            return True
+        current = current.getparent()
+    return False
+
+
 def extract_segments_from_doc(
     doc_path: str,
     body: Any,
@@ -223,26 +222,34 @@ def extract_segments_from_doc(
             continue
         tag = element.tag.lower()
 
-        # Skip non-text and unwanted elements
-        if tag in SKIP_TAGS:
-            continue
-        if tag not in TRANSLATABLE_TAGS:
+        # Elements inside a skipped subtree (<script>, <style>, <svg>) carry no
+        # translatable text; their own text is not in TRANSLATABLE_TAGS, and
+        # their tails are inside a subtree that must stay untouched.
+        if element is body or _in_skipped_subtree(element, body):
             continue
 
         anchor = build_segment_anchor(body, element)
 
-        # The element's own text node.
-        text = (element.text or "").strip()
-        if text:
-            _emit(element, text, anchor, tag, "text")
+        # The element's own text node. Any element that is not explicitly
+        # skipped can hold text: gating this on a list of known tags silently
+        # dropped whole paragraphs in bare <div>, <section> and <figure>
+        # wrappers, which are common in EPUBs that do not wrap every block in a
+        # <p>.
+        if tag not in SKIP_TAGS:
+            text = (element.text or "").strip()
+            if text:
+                _emit(element, text, anchor, tag, "text")
 
-        # Text sitting after an inline element is a separate text node with no
-        # addressable parent of its own; without this the tail would stay in
-        # the source language inside an otherwise translated paragraph.
-        if tag in INLINE_TAGS:
-            tail = (element.tail or "").strip()
-            if tail:
-                _emit(element, tail, anchor + TAIL_MARKER, tag, "tail")
+        # Text sitting after an element is a separate text node with no
+        # addressable parent of its own (`<p>第一行<br/>第二行</p>`: "第二行"
+        # belongs to neither p.text nor br.text), so it needs its own anchor.
+        # This runs for every element, not just inline ones: restricting it to
+        # INLINE_TAGS silently dropped the text after <br/>, <img/> and <ruby/>,
+        # which stayed in the source language inside an otherwise translated
+        # paragraph.
+        tail = (element.tail or "").strip()
+        if tail:
+            _emit(element, tail, anchor + TAIL_MARKER, tag, "tail")
 
     # Document <title> lives outside <body>; translate it too so reader tabs
     # and chapter lists are not left in the source language.

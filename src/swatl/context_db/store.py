@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 from pydantic import ValidationError
 
@@ -24,6 +26,13 @@ DB_FILE_SUFFIX = ".json"
 # Database names become file names, so they are deliberately restrictive.
 _DB_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
+# Stems that already mean something inside the context_db directory: the default
+# entries file, and the FAISS index plus its metadata written by
+# swatl.context.index. A database named "entries" or "index" resolves to those
+# exact files, so creating or deleting one would clobber the curated default
+# database / corrupt the vector index.
+RESERVED_DB_STEMS = frozenset({Path(ENTRIES_FILE).stem, DEFAULT_DB, "index"})
+
 
 def validate_db_name(name: str) -> str:
     """Return *name* if it is a safe database name, else raise ``ValueError``."""
@@ -36,6 +45,13 @@ def validate_db_name(name: str) -> str:
         )
     if name.endswith(DB_FILE_SUFFIX) or ".." in name:
         raise ValueError(f"Invalid context database name {name!r}")
+    # Compared case-insensitively: on a case-insensitive filesystem "Entries"
+    # and "entries" are the same file.
+    if name.lower() in RESERVED_DB_STEMS:
+        raise ValueError(
+            f"Invalid context database name {name!r}: reserved for the default "
+            "database and the vector index"
+        )
     return name
 
 
@@ -64,7 +80,11 @@ def list_databases(state_dir: str | Path) -> list[dict]:
         for path in sorted(directory.iterdir()):
             if path.name == ENTRIES_FILE:
                 names.append(DEFAULT_DB)
-            elif path.suffix == DB_FILE_SUFFIX and _DB_NAME_RE.fullmatch(path.stem):
+            elif (
+                path.suffix == DB_FILE_SUFFIX
+                and _DB_NAME_RE.fullmatch(path.stem)
+                and path.stem.lower() not in RESERVED_DB_STEMS
+            ):
                 names.append(path.stem)
 
     if DEFAULT_DB not in names:
@@ -116,6 +136,76 @@ def _is_nullable(field) -> bool:
     return type(None) in getattr(field.annotation, "__args__", ())
 
 
+def _backup_path(path: Path) -> Path:
+    """Path of the backup copy kept beside a context database."""
+    return path.with_suffix(path.suffix + ".bak")
+
+
+def _atomic_write_json(path: Path, data: list[dict[str, Any]]) -> None:
+    """Write *data* to *path* without ever truncating the existing file.
+
+    ``open(path, "w")`` empties the file before the new content is written, so a
+    crash, a full disk or a second writer (the web server and the CLI both edit
+    context databases) could leave a curated glossary unreadable. The new
+    content goes to a temporary file in the same directory and is moved into
+    place atomically, and the version being replaced is kept as ``<name>.bak``.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        try:
+            shutil.copyfile(path, _backup_path(path))
+        except OSError:  # pragma: no cover - the backup is best effort
+            logger.debug("Could not back up %s", path, exc_info=True)
+
+    tmp_path = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    except OSError:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _load_json_list(path: Path) -> list[dict[str, Any]]:
+    """Read a JSON array, recovering from the backup when the file is corrupt.
+
+    A missing file is an empty database. A damaged one is reported loudly rather
+    than raising out of every read path, and the previous version is used when a
+    backup exists.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError:
+        logger.error("Could not read context database %s", path, exc_info=True)
+        return []
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        backup = _backup_path(path)
+        if not backup.exists():
+            logger.error(
+                "Context database %s is corrupt and has no backup; treating it as empty", path
+            )
+            return []
+        logger.error("Context database %s is corrupt; recovering from %s", path, backup)
+        try:
+            data = json.loads(backup.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.error("Backup %s is unusable; treating the database as empty", backup)
+            return []
+
+    if not isinstance(data, list):
+        logger.error("Context database %s does not contain a JSON array", path)
+        return []
+    return data
+
+
 class ContextEntryStore:
     """Persists context entries to a JSON file with CRUD operations.
 
@@ -159,8 +249,7 @@ class ContextEntryStore:
         entries: dict[str, ContextEntry] = {}
         if not self.entries_file.exists():
             return entries
-        with open(self.entries_file, encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_json_list(self.entries_file)
         for item in data:
             if item.get("entry_type") is None:
                 logger.warning("Repairing context entry %s with a null entry_type", item.get("id"))
@@ -186,11 +275,9 @@ class ContextEntryStore:
     def create(self, entry: ContextEntry) -> ContextEntry:
         """Create a new entry and persist."""
         self._ensure_file()
-        with open(self.entries_file, encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_json_list(self.entries_file)
         data.append(entry.model_dump())
-        with open(self.entries_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(self.entries_file, data)
         logger.info("Created context entry %s", entry.id)
         return entry
 
@@ -214,14 +301,12 @@ class ContextEntryStore:
             setattr(entry, key, value)
         entry.update_timestamp()
         # Write back
-        with open(self.entries_file, encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_json_list(self.entries_file)
         for item in data:
             if item.get("id") == entry_id:
                 item.update(entry.model_dump())
                 break
-        with open(self.entries_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(self.entries_file, data)
         return entry
 
     def delete(self, entry_id: str) -> bool:
@@ -229,11 +314,9 @@ class ContextEntryStore:
         entries = self.load_all()
         if entry_id not in entries:
             return False
-        with open(self.entries_file, encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_json_list(self.entries_file)
         data = [item for item in data if item.get("id") != entry_id]
-        with open(self.entries_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(self.entries_file, data)
         logger.info("Deleted context entry %s", entry_id)
         return True
 
@@ -244,8 +327,7 @@ class ContextEntryStore:
         if not entries:
             return 0
         self._ensure_file()
-        with open(self.entries_file, encoding="utf-8") as f:
-            data = json.load(f)
+        data = _load_json_list(self.entries_file)
         existing_ids = {item.get("id") for item in data}
         added = 0
         for entry in entries:
@@ -253,8 +335,7 @@ class ContextEntryStore:
                 data.append(entry.model_dump())
                 existing_ids.add(entry.id)
                 added += 1
-        with open(self.entries_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        _atomic_write_json(self.entries_file, data)
         return added
 
     # ── Import / export ─────────────────────────────────────────────────

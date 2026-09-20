@@ -97,8 +97,21 @@ class ContextRetriever:
         if not vector:
             return []
 
-        # Apply document filter
-        doc_filter = None if self.cross_doc else current_doc
+        # Apply document filter. `cross_doc=False` means "only the current
+        # document": when the caller does not say which document that is, no
+        # entry can satisfy the constraint, so the search is skipped instead of
+        # silently returning hits from every unrelated document.
+        if self.cross_doc:
+            doc_filter = None
+        elif current_doc is None:
+            logger.warning(
+                "Retrieval is limited to the current document but none was given; "
+                "returning no context. Pass current_doc, or build the retriever "
+                "with cross_doc=True."
+            )
+            return []
+        else:
+            doc_filter = current_doc
 
         # Query the index
         results = self.index.query(

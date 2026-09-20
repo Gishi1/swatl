@@ -358,3 +358,62 @@ class TestProofreaderSkipsMTModels:
         assert result[0].status == SegmentStatus.TRANSLATED  # unchanged, not "proofread"
         assert result[0].translated == "Red Coast Base"
         assert any("cannot proofread" in r.message for r in caplog.records)
+
+
+class TestProofreaderDoesNotClaimFailedWork:
+    """A failed proofread must not be recorded as a successful one.
+
+    The provider returns the segment untouched when the HTTP request fails, so
+    the original (truthy) translation used to satisfy the success check and the
+    segment was marked PROOFREAD although nothing had been proofread.
+    """
+
+    @staticmethod
+    def _seg() -> Segment:
+        return Segment(
+            id="p-0001",
+            doc="d",
+            anchor=".//p[1]",
+            tag="p",
+            source_text="红岸基地",
+            translated="Red Coast Base",
+            status=SegmentStatus.TRANSLATED,
+        )
+
+    def test_provider_failure_keeps_the_segment_translated(self):
+        from swatl.proofread.proofreader import Proofreader
+
+        class FailingProvider:
+            mode = "json"
+            model = "chat"
+
+            async def proofread(self, segments, glossary=None):
+                # Mirrors OpenAICompatible: unchanged text, status untouched.
+                return list(segments)
+
+        seg = self._seg()
+        result = asyncio.run(Proofreader(FailingProvider(), retry_max=1).proofread_all([seg]))
+
+        assert result[0].status == SegmentStatus.TRANSLATED
+        assert result[0].translated == "Red Coast Base"
+
+    def test_successful_proofread_is_marked(self):
+        from swatl.proofread.proofreader import Proofreader
+
+        class ImprovingProvider:
+            mode = "json"
+            model = "chat"
+
+            async def proofread(self, segments, glossary=None):
+                out = []
+                for seg in segments:
+                    seg.translated = seg.translated + "."
+                    seg.status = SegmentStatus.PROOFREAD
+                    out.append(seg)
+                return out
+
+        seg = self._seg()
+        result = asyncio.run(Proofreader(ImprovingProvider()).proofread_all([seg]))
+
+        assert result[0].status == SegmentStatus.PROOFREAD
+        assert result[0].translated == "Red Coast Base."

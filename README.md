@@ -420,7 +420,11 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
 ## Known limitations
 
 - The quality audit is heuristic: it flags likely problems, it does not prove correctness.
-- Back-translation similarity is lexical overlap, not a learned metric.
+- Back-translation similarity uses chrF, the standard character n-gram metric — a
+  string metric, not a learned one. It separates faithful round trips from wrong
+  ones well (measured: median 0.62 for real round trips versus 0.02 for mismatched
+  pairs), but short segments can still score high by coincidence. Pass
+  `--metric levenshtein` for the older edit-distance ratio.
 - EPUB2 NCX (`toc.ncx`) navigation labels are not translated; EPUB3 navigation documents are.
 - Context-aware retrieval needs an embedding backend; the Ollama default requires `ollama pull bge-m3` (about 1.2 GB). Without one, translation still runs, minus the injected context.
 - The web GUI targets a single local user: it binds to `127.0.0.1` and has no authentication.
@@ -428,9 +432,13 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
 ### What gets translated
 
 Spine documents, the EPUB3 navigation document, and `<head><title>` elements.
-Within a document, text is handled per text node: an element's own text, the
-text of common inline elements (`em`, `strong`, `a`, `span`, `b`, `i`, `sup`, …),
-and the text that follows them. Everything else is copied through unchanged.
+Within a document, text is handled per text node: an element's own text and the
+text that follows any element (so `<p>一行<br/>二行</p>` yields both halves).
+Text inside `script`, `style` and `svg` subtrees, and the content of images,
+form controls and metadata are copied through unchanged.
+
+Anchors are XPath expressions resolved against the original document, so
+write-back only replaces the exact text nodes that were translated.
 
 ## Support
 
