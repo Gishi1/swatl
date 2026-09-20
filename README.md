@@ -46,7 +46,7 @@ is supported, and new pairs are a configuration change rather than a code change
 | **Translation memory** | Disk-backed cache, reused across runs and books. |
 | **Style guides** | Formal, casual, literary or technical register. |
 | **Bilingual export** | Parallel source/target EPUB for side-by-side reading. |
-| **Back-translation QA** | Sample-based verification that re-translates to the source language and scores similarity. |
+| **Back-translation QA** | Sample-based verification that re-translates to the source language and scores similarity with chrF (default), edit distance, or embeddings. |
 | **Cost visibility** | Token estimates and USD projections before you spend anything. |
 
 ## Installation
@@ -112,6 +112,7 @@ uv run swatl translate book.epub --translation-memory ./tm.json --state ./state
 uv run swatl translate book.epub --style literary --glossary ./glossary.toml --state ./state
 
 # Back-translation quality check (requires a real LLM)
+# add --metric semantic to score round trips with the embedding model instead
 uv run swatl back-translate --state ./state --provider deepseek --sample 20
 
 # Language-aware audit for a Japanese source
@@ -444,11 +445,14 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
   translation, glossary terms that are missing, length ratios too low to be
   plausible, and one translation reused for unrelated segments. A clean report
   means nothing obvious is wrong, not that the translation is good.
-- Back-translation similarity uses chrF, the standard character n-gram metric — a
-  string metric, not a learned one. It separates faithful round trips from wrong
-  ones well (measured: median 0.62 for real round trips versus 0.02 for mismatched
-  pairs), but short segments can still score high by coincidence. Pass
-  `--metric levenshtein` for the older edit-distance ratio.
+- Back-translation similarity defaults to chrF, the standard character n-gram
+  metric — a string metric, not a learned one. It separates faithful round trips
+  from wrong ones well (measured: median 0.62 for real round trips versus 0.02
+  for mismatched pairs), but short segments can still score high by coincidence.
+  `--metric semantic` embeds both texts and compares them, which separated the
+  same sample perfectly (every faithful round trip scored ≥ 0.78, no mismatched
+  pair above 0.78), at the cost of needing an embedding backend; `--metric
+  levenshtein` is the older edit-distance ratio.
 - Context retrieval quality depends on what is installed. With an embedding
   backend (Ollama `bge-m3`, about 1.2 GB, or any OpenAI-compatible embeddings
   endpoint) entries are matched semantically. With no backend, swatl falls back
