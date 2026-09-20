@@ -579,3 +579,21 @@ class TestCorruptDatabaseRecovery:
 
         assert store.count() == 0
         assert list(store.iter_entries()) == []
+
+
+class TestDecodeErrorRecovery:
+    """A non-UTF-8 database must be recovered from backup, like invalid JSON."""
+
+    def test_undecodable_database_recovers_from_backup(self, tmp_path):
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore
+
+        store = ContextEntryStore(str(tmp_path))
+        store.create(ContextEntry(source_text="红岸基地", translated_text="Red Coast Base"))
+        # A second write creates the .bak holding the first version.
+        store.create(ContextEntry(source_text="叶文洁", translated_text="Ye Wenjie"))
+
+        store.entries_file.write_bytes(b'[{"source_text": "\xff\xfe"}]')
+        recovered = {e.source_text for e in store.iter_entries()}
+
+        assert "红岸基地" in recovered, "the backup was not used for a decode error"

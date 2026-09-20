@@ -390,9 +390,20 @@ class TestNumberNormalisation:
     def test_decimal_is_not_confused_with_a_separator(self):
         assert self._flagged("3.5米", "35 metres")
 
-    def test_duplicated_number_dropped_is_caught(self):
-        """1987，1987 → 1987 loses a number; a set comparison missed it."""
-        assert self._flagged("1987，1987", "1987")
+    def test_repeated_number_stated_once_is_not_reported(self):
+        """Chinese repeats a number for emphasis where English often does not."""
+        assert not self._flagged("1987年，1987年的夏天", "the summer of 1987")
+
+    def test_plain_space_does_not_join_two_numbers(self):
+        """A space separates numbers; only comma/underscore are thousands marks."""
+        assert not self._flagged("1987 500", "1987, 500")
+        assert not self._flagged("1998 500 people", "In 1998 and 500 people")
+
+    def test_circled_and_superscript_digits_are_not_folded(self):
+        """NFKC would turn ① into 1 and ² into 2, inventing numbers."""
+        assert not self._flagged("第①章 开工", "Chapter One: start work")
+        assert not self._flagged("略²", "brief")
+        assert not self._flagged("占 ½", "half")
 
     def test_reordering_is_not_reported(self):
         assert not self._flagged("1987年和1997年", "In 1997 and 1987.")

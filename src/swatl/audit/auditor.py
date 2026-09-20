@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass, field
 
 from swatl.models import Glossary, Segment
@@ -212,15 +211,16 @@ def audit_segments(
         # 5. Numbers that changed between source and translation. Digits carry
         #    meaning that a rewrite silently alters (a date, a quantity, an
         #    equation number), so a difference is worth a look.
-        source_numbers = sorted(_numbers(seg.source_text))
-        translated_numbers = sorted(_numbers(text))
+        source_numbers = _numbers(seg.source_text)
+        translated_numbers = _numbers(text)
         if source_numbers and source_numbers != translated_numbers:
             report.issues.append(
                 AuditIssue(
                     type="number_mismatch",
                     segment_id=seg.id,
                     doc=seg.doc,
-                    detail=f"source has {source_numbers}, translation has {translated_numbers}",
+                    detail=f"source has {sorted(source_numbers)}, translation has "
+                    f"{sorted(translated_numbers)}",
                     severity="warning",
                 )
             )
@@ -252,24 +252,34 @@ def audit_segments(
     return report
 
 
-# A separator between digit groups: 3,500 / 3，500 / 3 500 / 3_500.
-_THOUSANDS_RE = re.compile(r"(?<=\d)[,，_\u2009 ](?=\d{3}(?!\d))")
+# A separator between digit groups: 3,500 / 3，500 / 3_500. A plain space is
+# deliberately not one: "1987 500" is two numbers, and merging them would turn a
+# correct translation of "1987 500" into a mismatch.
+_THOUSANDS_RE = re.compile(r"(?<=\d)[,，_](?=\d{3}(?!\d))")
+
+# Full-width digits and comma, folded to their ASCII forms. NFKC would be
+# broader and is wrong here: it maps "①" to "1", "²" to "2" and "½" to "1⁄2",
+# inventing numbers that a translation is not expected to reproduce.
+_FULLWIDTH_FOLD = str.maketrans("０１２３４５６７８９，", "0123456789,")
 
 
-def _numbers(text: str) -> list[str]:
+def _numbers(text: str) -> set[str]:
     """Numbers in *text*, normalised so equivalent notations compare equal.
 
     Full-width digits are folded to ASCII and thousands separators removed, so
     "３，５００", "3,500" and "3500" all yield "3500". Decimals are kept — 3.5 and
-    35 are different numbers. A list, not a set, is compared: reordering is not
-    reported, but a duplicated or dropped number is.
+    35 are different numbers.
 
-    Numbers spelled out in words ("nineteen eighty-seven") and unit conversions
-    ("3.5万元" → "35,000 yuan") still differ, which is why this is a warning.
+    A set is returned: reordering is not reported, and neither is a number the
+    source repeats but the translation legitimately states once ("1987年，1987年
+    的夏天" → "the summer of 1987"). A number that changed, vanished or appeared
+    is. Numbers spelled out in words ("nineteen eighty-seven") and unit
+    conversions ("3.5万元" → "35,000 yuan") still differ, which is why this
+    check is a warning rather than an error.
     """
-    folded = unicodedata.normalize("NFKC", text or "")
+    folded = (text or "").translate(_FULLWIDTH_FOLD)
     folded = _THOUSANDS_RE.sub("", folded)
-    return re.findall(r"\d+(?:\.\d+)?", folded)
+    return set(re.findall(r"\d+(?:\.\d+)?", folded))
 
 
 def _report_duplicate_translations(report: AuditReport, segments: list[Segment]) -> None:

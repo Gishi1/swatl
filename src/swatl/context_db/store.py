@@ -188,28 +188,33 @@ def _load_json_list(path: Path) -> list[dict[str, Any]]:
     than raising out of every read path, and the previous version is used when a
     backup exists.
     """
+    raw: str | None = None
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
     except (OSError, ValueError) as e:
-        # A truncated multi-byte character raises UnicodeDecodeError, which is a
-        # ValueError and not a JSONDecodeError; here it means the same thing.
-        logger.error("Could not read context database %s: %s", path, e)
-        return []
+        # A truncated multi-byte character raises UnicodeDecodeError (a
+        # ValueError, not a JSONDecodeError). It means the same as unparseable
+        # JSON, so fall through to the backup instead of returning early —
+        # which would drop the recovery that a UTF-8-but-invalid file gets.
+        logger.error("Context database %s could not be decoded: %s", path, e)
 
-    try:
-        data = json.loads(raw)
-    except ValueError as e:
+    data = None
+    if raw is not None:
+        try:
+            data = json.loads(raw)
+        except ValueError as e:
+            logger.error("Context database %s is corrupt (%s)", path, e)
+
+    if data is None:
         backup = _backup_path(path)
         if not backup.exists():
             logger.error(
-                "Context database %s is corrupt (%s) and has no backup; treating it as empty",
-                path,
-                e,
+                "Context database %s is damaged and has no backup; treating it as empty", path
             )
             return []
-        logger.error("Context database %s is corrupt (%s); recovering from %s", path, e, backup)
+        logger.error("Recovering context database %s from %s", path, backup)
         try:
             data = json.loads(backup.read_text(encoding="utf-8"))
         except (OSError, ValueError):

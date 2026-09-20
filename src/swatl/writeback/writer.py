@@ -378,8 +378,13 @@ def _replace_text(
     # neighbours has to be restored: without it `<p>他说 <em>你好</em> 世界。</p>`
     # renders as "He saidhelloworld." instead of "He said hello world.".
     original = (element.tail if is_tail else element.text) or ""
-    leading = original[: len(original) - len(original.lstrip())]
-    trailing = original[len(original.rstrip()) :]
+    if original.strip():
+        leading = original[: len(original) - len(original.lstrip())]
+        trailing = original[len(original.rstrip()) :]
+    else:
+        # Nothing but whitespace: "leading" and "trailing" would both be the
+        # whole node, duplicating it either side of the translation.
+        leading = trailing = ""
     replacement = f"{leading}{translated}{trailing}" if translated else original
 
     if is_tail:
@@ -444,7 +449,20 @@ def _create_output_epub(source_dir: Path, output_path: Path) -> None:
     except OSError:  # pragma: no cover - defensive
         output_resolved = output_path
 
-    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
+    # Written to a temporary file and moved into place: a failure part-way
+    # through used to leave a truncated file that looks like an export.
+    tmp_path = output_path.with_name(output_path.name + ".tmp")
+    try:
+        _zip_epub(source_dir, tmp_path, output_resolved)
+        os.replace(tmp_path, output_path)
+    except BaseException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
+def _zip_epub(source_dir: Path, target: Path, output_resolved: Path) -> None:
+    """Write the EPUB entries to *target*."""
+    with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
         mimetype = source_dir / "mimetype"
         if mimetype.is_file():
             zf.write(mimetype, "mimetype", compress_type=zipfile.ZIP_STORED)
