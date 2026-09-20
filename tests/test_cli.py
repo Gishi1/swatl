@@ -413,9 +413,9 @@ class TestInspectScratchDirectory:
         seen = {}
         real_extract = ingest.extract_epub
 
-        def recording_extract(epub_path, output_dir=None, *args, **kwargs):
+        def recording_extract(epub_path, output_dir=None):
             seen["output_dir"] = output_dir
-            return real_extract(epub_path, output_dir=output_dir, *args, **kwargs)
+            return real_extract(epub_path, output_dir=output_dir)
 
         monkeypatch.setattr(ingest, "extract_epub", recording_extract)
 
