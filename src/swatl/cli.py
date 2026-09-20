@@ -102,6 +102,7 @@ def _build_context_retriever(
     """
     from swatl.config import load_embedding_config
     from swatl.context import build_db_retriever, resolve_embedding_config
+    from swatl.context.db_context import build_keyword_retriever
     from swatl.context_db.store import ContextEntryStore
 
     try:
@@ -125,17 +126,31 @@ def _build_context_retriever(
         config_file=load_embedding_config(),
     )
     if resolution.config is None:
-        console.print(f"[yellow]Context: {resolution.reason}; continuing without it.[/yellow]")
-        return None
+        # No embedding backend: keyword retrieval still injects related entries
+        # from the database instead of dropping the feature entirely.
+        retriever = build_keyword_retriever(store)
+        if retriever is None:
+            return None
+        from rich.markup import escape as _escape
+
+        console.print(
+            f"[bold]Context: {count} entries from '{db}'[/bold] "
+            f"[dim]({_escape(resolution.reason)}; using keyword (BM25) matching)[/dim]"
+        )
+        return retriever
 
     try:
         retriever = build_db_retriever(store, resolution.config)
     except Exception as e:
+        retriever = build_keyword_retriever(store)
+        if retriever is None:
+            console.print(f"[yellow]Context: {e}; continuing without it.[/yellow]")
+            return None
         console.print(
-            f"[yellow]Context: could not index '{db}' with "
-            f"{resolution.config.backend} ({e}); continuing without it.[/yellow]"
+            f"[yellow]Context: {resolution.config.backend} unavailable ({e}); "
+            f"falling back to keyword (BM25) matching.[/yellow]"
         )
-        return None
+        return retriever
 
     if retriever is None:
         return None

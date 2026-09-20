@@ -22,7 +22,8 @@ from swatl.context.embedder import (
     pick_ollama_embedding_model,
 )
 from swatl.context.index import FaissIndex
-from swatl.context.retriever import ContextRetriever
+from swatl.context.keyword import BM25Index
+from swatl.context.retriever import KEYWORD_CONTEXT_LABEL, ContextRetriever, KeywordRetriever
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from swatl.context_db.store import ContextEntryStore
@@ -178,4 +179,39 @@ def build_db_retriever(
         cross_doc=True,  # curated entries apply to the whole book
         max_tokens=max_tokens,
         context_label=DB_CONTEXT_LABEL,
+    )
+
+
+def build_keyword_retriever(
+    store: ContextEntryStore,
+    k: int = 5,
+    max_tokens: int = 1500,
+) -> KeywordRetriever | None:
+    """Build a BM25 retriever over a context database, with no backend at all.
+
+    Used when no embedding backend is available: keyword ranking is weaker than
+    semantic search, but a useful context feature beats none, and it needs
+    nothing installed or running.
+    """
+    entries = [e for e in store.iter_entries() if e.source_text.strip()]
+    if not entries:
+        return None
+
+    keywords = [
+        {
+            "segment_id": entry.id,
+            "doc": entry.source_file or "",
+            "anchor": entry.section or "",
+            "source_text": entry.source_text,
+            "translated_text": entry.translated_text or "",
+            "entry_type": entry.entry_type,
+        }
+        for entry in entries
+    ]
+    return KeywordRetriever(
+        index=BM25Index.from_entries(keywords),
+        k=k,
+        cross_doc=True,  # curated entries apply to the whole book
+        max_tokens=max_tokens,
+        context_label=KEYWORD_CONTEXT_LABEL,
     )

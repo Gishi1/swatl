@@ -417,3 +417,65 @@ class TestProofreaderDoesNotClaimFailedWork:
 
         assert result[0].status == SegmentStatus.PROOFREAD
         assert result[0].translated == "Red Coast Base."
+
+
+class TestKeywordFallback:
+    """Without an embedding backend, context retrieval falls back to BM25."""
+
+    @staticmethod
+    def _store(tmp_path):
+        from swatl.context_db.model import ContextEntry
+        from swatl.context_db.store import ContextEntryStore
+
+        store = ContextEntryStore(str(tmp_path))
+        store.create(
+            ContextEntry(
+                source_text="红岸基地是一座秘密设施。",
+                translated_text="Red Coast Base is a secret facility.",
+                entry_type="curated",
+            )
+        )
+        store.create(
+            ContextEntry(
+                source_text="宇宙很大，生活更大。",
+                translated_text="The universe is vast, but life is vaster.",
+                entry_type="curated",
+            )
+        )
+        return store
+
+    def test_retrieves_the_matching_entry(self, tmp_path):
+        from swatl.context.db_context import build_keyword_retriever
+
+        retriever = build_keyword_retriever(self._store(tmp_path))
+        assert retriever is not None
+
+        items = retriever.retrieve("红岸基地是一座秘密设施。")
+        assert items
+        assert items[0].source_text == "红岸基地是一座秘密设施。"
+        assert "Red Coast Base" in items[0].translated_text
+
+    def test_formats_like_the_embedding_retriever(self, tmp_path):
+        from swatl.context.db_context import build_keyword_retriever
+
+        retriever = build_keyword_retriever(self._store(tmp_path))
+        formatted = retriever.retrieve_and_format("宇宙很大，生活更大。")
+        assert "The universe is vast" in formatted
+        assert "keyword" in retriever.context_label
+
+    def test_empty_database_returns_none(self, tmp_path):
+        from swatl.context.db_context import build_keyword_retriever
+        from swatl.context_db.store import ContextEntryStore
+
+        assert build_keyword_retriever(ContextEntryStore(str(tmp_path))) is None
+
+    def test_translator_accepts_the_keyword_retriever(self, tmp_path):
+        """Same public surface, so the translator does not care which it holds."""
+        from swatl.context.db_context import build_keyword_retriever
+
+        retriever = build_keyword_retriever(self._store(tmp_path))
+        batches = retriever.retrieve_many_formatted(
+            ["红岸基地", "无关内容"], ["ch01.xhtml", "ch01.xhtml"]
+        )
+        assert len(batches) == 2
+        assert "Red Coast Base" in batches[0]

@@ -425,7 +425,11 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
   ones well (measured: median 0.62 for real round trips versus 0.02 for mismatched
   pairs), but short segments can still score high by coincidence. Pass
   `--metric levenshtein` for the older edit-distance ratio.
-- Context-aware retrieval needs an embedding backend; the Ollama default requires `ollama pull bge-m3` (about 1.2 GB). Without one, translation still runs, minus the injected context.
+- Context retrieval quality depends on what is installed. With an embedding
+  backend (Ollama `bge-m3`, about 1.2 GB, or any OpenAI-compatible embeddings
+  endpoint) entries are matched semantically. With no backend, swatl falls back
+  to BM25 keyword matching, which needs nothing installed but only finds entries
+  that share words with the segment — so it misses paraphrases and synonyms.
 - The web GUI targets a single local user: it binds to `127.0.0.1` and has no authentication.
 
 ### What gets translated
