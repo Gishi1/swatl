@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv
+import hmac
+import os
 from pathlib import Path
 from typing import Annotated
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ValidationError
 
 from swatl.context_db.importer import (
@@ -28,6 +30,50 @@ from swatl.state import SegmentStore
 from swatl.web.ui import html_page
 
 app = FastAPI(title="swatl", version="0.1.0")
+
+# ── Optional access token ───────────────────────────────────────────────────
+# The GUI is built for one local user, so it is unauthenticated by default and
+# bound to loopback. When it is exposed to a network, a token stops other hosts
+# from reading or editing the state directory. It is accepted as a bearer header
+# (scripts) or as ``?token=`` (so a browser can simply be given a URL), and
+# compared in constant time.
+_WEB_TOKEN: str = os.environ.get("SWATL_WEB_TOKEN", "")
+
+
+def set_access_token(token: str | None) -> None:
+    """Require *token* on every ``/api`` request; empty or None disables it."""
+    global _WEB_TOKEN
+    _WEB_TOKEN = token or ""
+
+
+def access_token() -> str:
+    """The token currently required, or an empty string when auth is off."""
+    return _WEB_TOKEN
+
+
+def _presented_token(request) -> str:
+    header = request.headers.get("authorization", "")
+    if header.lower().startswith("bearer "):
+        return header[len("bearer ") :].strip()
+    return request.query_params.get("token", "")
+
+
+@app.middleware("http")
+async def _require_token(request, call_next):
+    """Reject API calls that do not carry the configured token."""
+    if _WEB_TOKEN and request.url.path.startswith("/api"):
+        presented = _presented_token(request)
+        if not presented or not hmac.compare_digest(presented, _WEB_TOKEN):
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": (
+                        "Missing or invalid access token. Open the GUI with "
+                        "?token=<token> or send an Authorization: Bearer header."
+                    )
+                },
+            )
+    return await call_next(request)
 
 
 def _expand(state_dir: str) -> str:
@@ -686,8 +732,10 @@ async def import_file(
 # ---- CLI launcher ----
 
 
-def run_server(host: str = "127.0.0.1", port: int = 8080) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8080, token: str | None = None) -> None:
     """Run the web server (convenience function for CLI)."""
     import uvicorn
 
+    if token:
+        set_access_token(token)
     uvicorn.run("swatl.web:app", host=host, port=port, reload=False)

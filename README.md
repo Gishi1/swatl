@@ -143,6 +143,21 @@ automatically. State directories travel as query parameters, so nested and
 absolute paths work. Read-only endpoints never create directories on disk, and
 the layout adapts to narrow viewports.
 
+### Exposing the GUI to your network
+
+The GUI is built for one local user: it binds to `127.0.0.1` and, by default,
+has no authentication. To reach it from another machine, bind it to an address
+and set a token — every `/api` request is then rejected without it:
+
+```bash
+uv run swatl web --host 0.0.0.0 --token "$(openssl rand -hex 16)"
+# The CLI prints the URL to open, including ?token=…
+# Scripts can send `Authorization: Bearer <token>` instead.
+```
+
+Binding to a network address *without* a token prints a warning, because anyone
+who can reach the port can read and modify the state directory.
+
 ### HTTP API
 
 The GUI is a thin client over a small JSON API. Every endpoint takes
@@ -433,7 +448,9 @@ The same settings can come from `SWATL_EMBEDDING_BACKEND`,
   endpoint) entries are matched semantically. With no backend, swatl falls back
   to BM25 keyword matching, which needs nothing installed but only finds entries
   that share words with the segment — so it misses paraphrases and synonyms.
-- The web GUI targets a single local user: it binds to `127.0.0.1` and has no authentication.
+- The web GUI targets a single local user. It binds to `127.0.0.1` by default
+  and is unauthenticated unless `--token` is set; the token is a shared secret in
+  a URL or header, not a user account system with sessions or per-user rights.
 
 ### What gets translated
 

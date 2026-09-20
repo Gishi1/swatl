@@ -476,6 +476,26 @@ let stateDirMissing = false;
 let filterTimer = null;
 
 const API = '/api';
+
+// Optional access token. It arrives once as ?token=…, is kept for the session
+// and is removed from the address bar so it does not linger in history.
+const TOKEN_KEY = 'swatl_token';
+function loadToken() {
+  const params = new URLSearchParams(location.search);
+  const fromUrl = params.get('token');
+  if (!fromUrl) return sessionStorage.getItem(TOKEN_KEY) || '';
+  sessionStorage.setItem(TOKEN_KEY, fromUrl);
+  params.delete('token');
+  const qs = params.toString();
+  history.replaceState(null, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+  return fromUrl;
+}
+const TOKEN = loadToken();
+function authHeaders(extra) {
+  const headers = Object.assign({}, extra || {});
+  if (TOKEN) headers['Authorization'] = 'Bearer ' + TOKEN;
+  return headers;
+}
 const SEG_PAGE_SIZE = 100;
 const STATE_DIR_KEY = 'swatl.stateDir';
 
@@ -506,7 +526,7 @@ function resetFilters() {
 
 async function api(method, pathOrUrl, opts) {
   let url = API + pathOrUrl;
-  const fetchOpts = { method, headers: {'Content-Type':'application/json'} };
+  const fetchOpts = { method, headers: authHeaders({'Content-Type':'application/json'}) };
   if (opts) {
     if (opts.params) {
       const qs = new URLSearchParams(opts.params).toString();
@@ -940,7 +960,7 @@ async function doImportText() {
   try {
     const r = await fetch(API + '/context/import/text?state_dir=' + encodeURIComponent(sd)
       + '&db=' + encodeURIComponent(getContextDb()), {
-      method: 'POST', body: formData,
+      method: 'POST', body: formData, headers: authHeaders(),
     });
     if (!r.ok) throw new Error(await errorText(r));
     const data = await r.json();
@@ -960,7 +980,7 @@ async function doImportJSON() {
   try {
     const r = await fetch(API + '/context/import/json?state_dir=' + encodeURIComponent(sd)
       + '&db=' + encodeURIComponent(getContextDb()), {
-      method: 'POST', body: formData,
+      method: 'POST', body: formData, headers: authHeaders(),
     });
     if (!r.ok) throw new Error(await errorText(r));
     const data = await r.json();
@@ -982,7 +1002,7 @@ async function doImportFile() {
   try {
     const r = await fetch(API + '/context/import/file?state_dir=' + encodeURIComponent(sd)
       + '&db=' + encodeURIComponent(getContextDb()), {
-      method: 'POST', body: formData,
+      method: 'POST', body: formData, headers: authHeaders(),
     });
     if (!r.ok) throw new Error(await errorText(r));
     const data = await r.json();

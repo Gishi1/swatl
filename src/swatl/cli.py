@@ -1078,13 +1078,42 @@ def context_import(
 def web(
     host: str = typer.Option("127.0.0.1", "--host", "-h", help="Bind host."),
     port: int = typer.Option(8080, "--port", "-p", help="Bind port."),
+    token: str = typer.Option(
+        "",
+        "--token",
+        envvar="SWATL_WEB_TOKEN",
+        help="Require this token on every API request.",
+    ),
 ) -> None:
-    """Launch the web GUI."""
-    console.print(f"[bold]Starting swatl web GUI at http://{host}:{port}[/bold]")
-    console.print("  Press Ctrl+C to stop.")
+    """Launch the web GUI.
+
+    The GUI is meant for a single local user and has no authentication unless
+    --token is given, so it binds to loopback by default. Binding it to a
+    network address without a token lets anyone who can reach the port read and
+    modify the state directory.
+    """
     from swatl.web import run_server
 
-    run_server(host, port)
+    loopback = host in ("127.0.0.1", "localhost", "::1", "[::1]")
+    if not loopback and not token:
+        console.print(
+            f"[yellow]Warning: {host}:{port} is reachable from the network and no "
+            "token is set — anyone who can reach it may read or edit the state "
+            "directory.[/yellow]"
+        )
+        console.print(
+            "[dim]  Re-run with --token <secret> (or set SWATL_WEB_TOKEN) to require one.[/dim]"
+        )
+
+    # 0.0.0.0 and :: are bind addresses, not browsable ones.
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::", "[::]") else host
+    url = f"http://{display_host}:{port}/"
+    console.print(f"[bold]Starting swatl web GUI at {url}[/bold]")
+    if token:
+        console.print(f"  Open: {url}?token={token}")
+    console.print("  Press Ctrl+C to stop.")
+
+    run_server(host, port, token=token or None)
 
 
 def main() -> None:

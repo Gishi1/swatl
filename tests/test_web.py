@@ -702,3 +702,163 @@ class TestContextDatabasesAPI:
         stats = client.get("/api/context/stats", params={**sd, "db": "x"}).json()
         assert stats["db"] == "x"
         assert stats["total"] == 0
+
+
+class TestAccessToken:
+    """The optional token protects /api without getting in the way locally."""
+
+    @staticmethod
+    def _client():
+        from swatl.web.app import set_access_token
+
+        return TestClient(app), set_access_token
+
+    def test_api_is_open_by_default(self, tmp_path):
+        pytest.importorskip("fastapi")
+        from swatl.web.app import set_access_token
+
+        set_access_token(None)
+        try:
+            client = TestClient(app)
+            assert (
+                client.get("/api/segments", params={"state_dir": str(tmp_path)}).status_code == 200
+            )
+        finally:
+            set_access_token(None)
+
+    def test_api_requires_the_token_when_set(self, tmp_path):
+        from swatl.web.app import set_access_token
+
+        set_access_token("s3cret")
+        try:
+            client = TestClient(app)
+            denied = client.get("/api/segments", params={"state_dir": str(tmp_path)})
+            assert denied.status_code == 401
+            assert "token" in denied.json()["detail"].lower()
+
+            allowed = client.get(
+                "/api/segments",
+                params={"state_dir": str(tmp_path)},
+                headers={"Authorization": "Bearer s3cret"},
+            )
+            assert allowed.status_code == 200
+        finally:
+            set_access_token(None)
+
+    def test_wrong_token_is_rejected(self, tmp_path):
+        from swatl.web.app import set_access_token
+
+        set_access_token("s3cret")
+        try:
+            client = TestClient(app)
+            assert (
+                client.get(
+                    "/api/segments",
+                    params={"state_dir": str(tmp_path)},
+                    headers={"Authorization": "Bearer nope"},
+                ).status_code
+                == 401
+            )
+            assert (
+                client.get(
+                    "/api/segments", params={"state_dir": str(tmp_path), "token": "nope"}
+                ).status_code
+                == 401
+            )
+        finally:
+            set_access_token(None)
+
+    def test_query_parameter_works_for_browsers(self, tmp_path):
+        """A browser can be pointed at a URL, so ?token= is accepted too."""
+        from swatl.web.app import set_access_token
+
+        set_access_token("s3cret")
+        try:
+            client = TestClient(app)
+            allowed = client.get(
+                "/api/segments", params={"state_dir": str(tmp_path), "token": "s3cret"}
+            )
+            assert allowed.status_code == 200
+        finally:
+            set_access_token(None)
+
+    def test_page_shell_stays_public(self):
+        """The page contains no data, so it can load before the token is read."""
+        from swatl.web.app import set_access_token
+
+        set_access_token("s3cret")
+        try:
+            client = TestClient(app)
+            assert client.get("/").status_code == 200
+        finally:
+            set_access_token(None)
+
+    def test_mutating_endpoints_are_protected(self, tmp_path):
+        from swatl.web.app import set_access_token
+
+        set_access_token("s3cret")
+        try:
+            client = TestClient(app)
+            write = client.post(
+                "/api/glossary",
+                params={"state_dir": str(tmp_path)},
+                json={"source": "红岸基地", "target": "Red Coast Base"},
+            )
+            assert write.status_code == 401
+        finally:
+            set_access_token(None)
+
+    def test_ui_sends_the_token_with_api_calls(self):
+        """The embedded script must attach the header, or the GUI breaks."""
+        from swatl.web.ui import html_page
+
+        page = html_page
+        assert "authHeaders" in page
+        assert "Authorization" in page
+        assert "sessionStorage" in page
+
+
+class TestWebCommandWarning:
+    """Binding off loopback without a token must be called out."""
+
+    @staticmethod
+    def _run(monkeypatch, args):
+        from typer.testing import CliRunner
+
+        from swatl import cli
+
+        started = {}
+
+        def fake_run_server(host, port, token=None):
+            started.update({"host": host, "port": port, "token": token})
+
+        monkeypatch.setattr("swatl.web.run_server", fake_run_server, raising=False)
+        result = CliRunner().invoke(cli.app, args)
+        return result, started
+
+    def test_non_loopback_without_token_warns(self, monkeypatch):
+        result, started = self._run(monkeypatch, ["web", "--host", "0.0.0.0", "--port", "8765"])
+
+        assert result.exit_code == 0, result.output
+        assert "Warning" in result.output
+        assert "token" in result.output.lower()
+        assert started["host"] == "0.0.0.0"
+        assert started["token"] is None
+
+    def test_token_is_passed_through_and_shown(self, monkeypatch):
+        result, started = self._run(
+            monkeypatch, ["web", "--host", "0.0.0.0", "--port", "8765", "--token", "s3cret"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Warning" not in result.output
+        assert started["token"] == "s3cret"
+        assert "s3cret" in result.output
+
+    def test_loopback_needs_no_token(self, monkeypatch):
+        result, started = self._run(monkeypatch, ["web", "--port", "8766"])
+
+        assert result.exit_code == 0, result.output
+        assert "Warning" not in result.output
+        assert started["host"] == "127.0.0.1"
+        assert started["token"] is None
